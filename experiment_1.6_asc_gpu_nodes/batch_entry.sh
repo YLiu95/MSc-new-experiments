@@ -2,6 +2,7 @@
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
 source ./env.sh
+export SLURM_EXPORT_ENV=ALL
 umask 077
 mkdir -p "$ARTIFACT_ROOT/control"
 stop_file="$ARTIFACT_ROOT/control/stop-$SLURM_JOB_ID"
@@ -13,7 +14,7 @@ fi
 set +e
 srun --cpu-bind=none --cpus-per-task=32 --nodes="$SLURM_JOB_NUM_NODES" \
     --ntasks="$SLURM_JOB_NUM_NODES" --ntasks-per-node=1 \
-    bash "$SLURM_SUBMIT_DIR/node_entry.sh" "${limits[0]}" "${limits[1]}" "$stop_file"
+    /usr/bin/bash "$SLURM_SUBMIT_DIR/node_entry.sh" "${limits[0]}" "${limits[1]}" "$stop_file"
 status=$?
 set -e
 python -m ranker.backup local --root "$ARTIFACT_ROOT" --job-id "$SLURM_JOB_ID" --all-arms --backup-by "${limits[1]}"

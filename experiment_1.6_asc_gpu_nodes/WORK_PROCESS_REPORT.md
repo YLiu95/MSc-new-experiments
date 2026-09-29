@@ -62,6 +62,17 @@ queue-wait decision. No scheduler forecast below reserves a node.
   imports and empty stderr. The failed job ID remains in the submissions
   ledger; a replacement eight-node screen requires a new verified source
   commit and a new Slurm job ID.
+- Second screen submission `3211041` started on all eight nodes at 19:28:28
+  but exited FAILED/2 with **zero optimizer updates**: the clean batch's
+  `srun` step could not resolve a bare `bash` executable. The launch now
+  uses `/usr/bin/bash` and sets `SLURM_EXPORT_ENV=ALL` only after filtering
+  the batch environment. Nested one-node `sbatch`/`srun` preflight `3211051`
+  completed 0:0 in two seconds with empty stderr and the required imports.
+  More importantly, clean eight-node `sbatch`/`srun`/three-group diagnostic
+  `3211058` completed 0:0 in twelve seconds, producing A DP=16 and B/C
+  DP=24 BF16 gradient checks within tolerance. Its IPv6 socket fallback
+  warnings did not stop NCCL. Both failed screen IDs are retained in the
+  ledger; neither trained a sample nor wrote a checkpoint.
 - The inherited home quota is 10 GiB. A failed installation was moved to
   private scratch, with a home-path symlink; the separate pinned environment
   then installed and passed `pip check`. The 1.5 environment was left alone.
