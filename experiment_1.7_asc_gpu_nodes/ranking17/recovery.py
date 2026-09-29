@@ -111,6 +111,7 @@ def restore(directory, model, optimizer, config):
     torch.cuda.empty_cache()
     optimizer.load_state_dict(recovery["optimizer"])
     del recovery
+    torch.cuda.empty_cache()
     restore_rng(torch.load(directory / names[1], map_location="cpu", weights_only=True), context.device)
     return state
 
