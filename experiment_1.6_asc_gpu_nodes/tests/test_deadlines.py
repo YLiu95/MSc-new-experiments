@@ -27,6 +27,7 @@ def test_batch_request_has_time_limit_deadline_and_no_wait_flag():
     assert "--nodes=3" in command and "--gpus-per-node=8" in command
     assert "--time=120" in command and "--deadline=2026-09-29T20:10:00" in command
     assert "--export=NONE" in command and "--wait" not in command
+    assert any("experiment_1.6_masked/control/slurm-" in option for option in command)
     amended = request(8, 60, 12, now=now, end=end)
     assert "--nodes=8" in amended and "--time=720" in amended
     assert "--deadline=2026-09-30T06:01:00" in amended

@@ -23,7 +23,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from .checkpoints import digest, pointer, restore_checkpoint, save_checkpoint
 from .contract import MARKETS, REVISION, Task
-from .data import MarketPanel, write_json
+from .data import MarketPanel, PREPARATION_POLICY, write_json
 from .evaluate import evaluate_model
 from .losses import pairwise_logistic
 from .model import ModelConfig, RankingModel
@@ -162,8 +162,8 @@ def train(arguments) -> None:
     root = arguments.root / arguments.arm
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     metadata = json.loads((arguments.panel / "meta.json").read_text())
-    if metadata["revision"] != REVISION:
-        raise ValueError("Attempted training on an unregistered dataset revision")
+    if metadata["revision"] != REVISION or metadata.get("preparation_policy") != PREPARATION_POLICY:
+        raise ValueError("Training needs the pinned revision with source-imputed prices excluded")
     registries = {name: json.loads((arguments.panel / "evaluation" / f"val-{name}.json").read_text())
                   for name in ("primary", "heldout")}
     if any(not (arguments.panel / "evaluation" / value["file"]).is_file() for value in registries.values()):
@@ -171,7 +171,8 @@ def train(arguments) -> None:
     source_dir = Path(__file__).resolve().parents[1]
     config_model = ModelConfig(tickers=metadata["n_tickers"])
     config = {"model": asdict(config_model), "arm": arguments.arm, "seed": arguments.seed,
-              "data": {"revision": REVISION, "scale": metadata["return_scale_pct"],
+              "data": {"revision": REVISION, "preparation_policy": PREPARATION_POLICY,
+                       "scale": metadata["return_scale_pct"],
                        "vocabulary_sha256": digest(arguments.panel / "vocabulary.json")},
               "validation": {name: value["sha256"] for name, value in registries.items()},
               "software": {"torch": str(torch.__version__), "numpy": np.__version__,

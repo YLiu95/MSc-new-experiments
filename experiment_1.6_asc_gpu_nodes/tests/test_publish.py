@@ -7,7 +7,7 @@ import torch
 
 from ranker.checkpoints import save_checkpoint
 from ranker.publish import GITHUB_FOLDER, git_blob, github_files, model_files
-from ranker.data import write_json
+from ranker.data import PREPARATION_POLICY, write_json
 from ranker.model import ModelConfig, RankingModel
 
 
@@ -60,7 +60,8 @@ def test_public_file_set_is_one_verifiable_best_and_latest_without_private_panel
     (selected / "runs").mkdir()
     (selected / "runs" / "events.out.tfevents.test").write_text("aggregate only")
     (root / "panel").mkdir()
-    write_json(root / "panel" / "meta.json", {"return_scale_pct": 3.4, "input_clip": 8, "n_tickers": 6})
+    write_json(root / "panel" / "meta.json", {"return_scale_pct": 3.4, "input_clip": 8,
+                                                 "n_tickers": 6, "preparation_policy": PREPARATION_POLICY})
     write_json(root / "panel" / "vocabulary.json", [{"market": "AU", "ticker": "A"}])
     (root / "panel" / "raw.npy").write_bytes(b"private")
     for name in ("baselines.json", "evaluation_registry.json"):

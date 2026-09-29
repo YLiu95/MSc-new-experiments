@@ -7,7 +7,8 @@ file at a verified private GitHub commit. An unauthenticated reader may get 404.
 ## Status and intended use
 
 As of 2026-09-29, the research pipeline and pinned validation suites exist,
-with a 21-update real-data GPU recovery smoke but no official A/B/C learning
+with a corrected one-update GPU recovery smoke and an **invalidated** first
+A/B/C screen, but no valid learning
 screen result, held-out/task-transfer finding, test result, frozen
 downstream probe, investment return, or profitability claim has been established.
 Weights must not be presented as a calibrated expected return or probability.
@@ -36,16 +37,20 @@ the trained UNK row; use normal or identity-masked mode to inspect transfer.
 
 Data uses private `YL95/new_experiment_1-data` at revision
 `bcbbefdbe2313673895eb1a0d354747a9f1624fa`, `adj_close_clean`; its card
-declares ODC-BY. Retrospective adjustment, cleaning, unobserved delistings and
-changes in ticker coverage limit any causal or portfolio interpretation. The
-source cache rejected 111,523 invalid price observations across 13 markets;
-new 1.6 preparation recorded no duplicate observations in that cache, but has
-not independently certified each exchange calendar. Training-period FP64
+declares ODC-BY for its compilation and reports Yahoo Finance as its source.
+It is **survivors only**: delisted firms' histories are largely absent, not
+merely missing some future labels. Yahoo's underlying personal/noncommercial
+terms do not establish a right to publish derived weights and identities.
+Retrospective adjustment and cleaning also preclude a point-in-time portfolio
+claim. The source cache rejected 111,523 invalid price observations across
+13 markets. Corrected 1.6 preparation excluded its 36,089 forward-filled,
+flagged prices and both touching returns (61,505 finite returns removed).
+Exchange calendars have not been independently certified. Training-period FP64
 population standard deviation (ddof 0, no mean subtraction) is
-`3.4060786363283126` percentage points, fitted from 76,479,949 finite daily
+`3.40288677815176` percentage points, fitted from 76,467,613 finite daily
 returns dated through 2018-12-31. Inputs are divided by this value and clipped
 to [-8,8]; labels are signed H-session sums accumulated in FP64 then cast to
-FP32, with no clipping. There are 24,022 training-seen ticker identity rows and
+FP32, with no clipping. There are 24,010 training-seen ticker identity rows and
 one learned UNK row. Raw price panels, per-sample labels, basket identities,
 eligibility lists and private predictions are not public artifacts.
 
@@ -70,10 +75,10 @@ Spearman, averaging baskets/date/market/task in that order, excluding constant
 outcomes and reporting missing cells. The model checkpoint cannot be selected
 by the monitoring subset, holdout, training loss, or test labels.
 
-On the primary suite, 3,352,558 label occurrences were observed and 1,554 were
-unavailable; 99 baskets had degenerate Spearman and three market/task cells
-were missing. Non-neural momentum macro Spearman was -0.00018994, reversal
-+0.00018994, and constant scores 0. These are fixed-suite baseline
+On the corrected primary suite, 3,344,940 label occurrences were observed
+and 9,172 were unavailable; 123 baskets had degenerate Spearman and three
+market/task cells were missing. Non-neural momentum macro Spearman was
++0.00105232, reversal -0.00105232, and constant scores 0. These are fixed-suite baseline
 observations, **not** results for an untrained or trained neural ranker.
 Pair accuracy counts tied predicted scores as half; top/bottom selections
 report observed-outcome counts. No annualized Sharpe or portfolio claim is

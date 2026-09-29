@@ -1,10 +1,12 @@
 import json
 
 import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
-from ranker.contract import Task, labels_from_returns, price_to_returns
-from ranker.data import MarketPanel, write_market
+from ranker.contract import REVISION, Task, historical_eligibility, labels_from_returns, price_to_returns
+from ranker.data import MarketPanel, mask_imputed_returns, prepare, source_imputation_mask, write_json, write_market
 
 
 def test_panel_uses_only_history_for_baskets(tmp_path):
@@ -31,3 +33,39 @@ def test_fp64_label_reduction_and_missing_future():
     labels = labels_from_returns(returns, 1, 2)
     assert labels[0] == -5
     assert np.isnan(labels[1])
+
+
+def test_source_imputation_masks_both_adjacent_returns_without_changing_earlier_basket():
+    prices = np.exp(np.arange(90)[None, :] * np.array([0.01, 0.02, -0.01])[:, None])
+    raw = price_to_returns(prices)
+    flags = np.zeros(raw.shape, dtype=bool)
+    flags[1, 75] = True
+    cutoff = 74
+    earlier = historical_eligibility(raw, 64)[:, cutoff]
+    corrected, excluded = mask_imputed_returns(raw, flags)
+    assert excluded == 2
+    assert np.isnan(corrected[1, 75:77]).all()
+    np.testing.assert_array_equal(historical_eligibility(corrected, 64)[:, cutoff], earlier)
+    assert np.isnan(labels_from_returns(corrected, cutoff, 7)[1])
+    assert not historical_eligibility(corrected, 64)[1, 76]
+
+
+def test_pinned_parquet_flags_align_with_ticker_dates_and_training_split(tmp_path):
+    path = tmp_path / "flags.parquet"
+    table = pa.table({"ticker": ["B", "A", "A", "B"],
+                      "date": pa.array(np.array(["2018-12-31", "2018-12-31", "2019-01-01", "2019-01-01"],
+                                                dtype="datetime64[D]")),
+                      "flag_imputed": [False, True, None, True]})
+    pq.write_table(table, path)
+    dates = np.array(["2018-12-31", "2019-01-01"], dtype="datetime64[D]")
+    flags, audit = source_imputation_mask([path], dates, ["A", "B"])
+    np.testing.assert_array_equal(flags, [[True, False], [False, True]])
+    assert audit["source_imputed_prices_rejected"] == 2
+    assert audit["source_imputed_train_prices"] == 1
+    assert audit["source_imputed_validation_prices"] == 1
+
+
+def test_existing_unmasked_panel_cannot_be_reused(tmp_path):
+    write_json(tmp_path / "panel" / "meta.json", {"revision": REVISION, "source": "old"})
+    with pytest.raises(ValueError, match="provenance"):
+        prepare(tmp_path)

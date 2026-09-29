@@ -7,7 +7,7 @@ import torch
 
 from ranker.checkpoints import pointer
 from ranker.contract import REVISION, price_to_returns
-from ranker.data import MarketPanel, write_json, write_market
+from ranker.data import MarketPanel, PREPARATION_POLICY, write_json, write_market
 from ranker.evaluate import build_manifest
 from ranker.model import ModelConfig
 import ranker.train as training
@@ -24,7 +24,8 @@ def test_real_format_next_update_after_restore_matches_uninterrupted(tmp_path, m
     prices = np.exp(daily + 0.01 * np.sin(np.arange(len(dates))[None, :] / 9))
     write_market(panel_root / "AU", price_to_returns(prices), dates, [f"S{index}" for index in range(6)], 2.0)
     np.save(panel_root / "AU" / "ids.npy", np.arange(6, dtype=np.int32))
-    write_json(panel_root / "meta.json", {"revision": REVISION, "n_tickers": 6, "return_scale_pct": 2.0})
+    write_json(panel_root / "meta.json", {"revision": REVISION, "preparation_policy": PREPARATION_POLICY,
+                                          "n_tickers": 6, "return_scale_pct": 2.0})
     write_json(panel_root / "vocabulary.json", [{"market": "AU", "ticker": f"S{index}"} for index in range(6)])
     registry = build_manifest(panel_root / "evaluation", [MarketPanel(panel_root, "AU")],
                               "val", 7331, ((64, 7, 3),), max_cutoffs=2)

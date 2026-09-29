@@ -36,7 +36,7 @@ def request(nodes: int, wait_seconds: int, hours: float, forecast: bool = False,
         raise ValueError("A one-hour minimum job plus queue wait does not fit before reservation expiry")
     deadline = now + timedelta(seconds=wait_seconds, minutes=minutes)
     directory = Path(__file__).resolve().parents[1]
-    root = Path("/net/tscratch/people") / pwd.getpwuid(os.getuid()).pw_name / "experiments" / "experiment_1.6"
+    root = Path("/net/tscratch/people") / pwd.getpwuid(os.getuid()).pw_name / "experiments" / "experiment_1.6_masked"
     return ["sbatch", "--parsable", "--export=NONE", "--account=tutorial", "--partition=tutorial",
             "--reservation=training", f"--nodes={nodes}", f"--ntasks={nodes}", "--ntasks-per-node=1",
             "--cpus-per-task=32", "--gpus-per-node=8", "--mem=256G", f"--time={minutes}",
@@ -70,7 +70,7 @@ def forecast(hours: float, wait_seconds: int = 3600) -> None:
 
 def submit(nodes: int, wait_seconds: int, hours: float) -> str:
     command = request(nodes, wait_seconds, hours)
-    root = Path("/net/tscratch/people") / pwd.getpwuid(os.getuid()).pw_name / "experiments" / "experiment_1.6"
+    root = Path("/net/tscratch/people") / pwd.getpwuid(os.getuid()).pw_name / "experiments" / "experiment_1.6_masked"
     source_report = json.loads((root / "control" / "github_source.json").read_text())
     local_files = github_files(Path(__file__).resolve().parents[1], Path.home() / "experiment_1.6_plan.md")
     if (source_report.get("repository") != "YLiu95/MSc-new-experiments" or not source_report.get("private")

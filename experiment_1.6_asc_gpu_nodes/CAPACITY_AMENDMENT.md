@@ -44,6 +44,14 @@ earlier of actual batch EndTime and the reservation end, reserving at least
 backups at least 20 minutes before that earlier shutdown. Checkpoint pointers
 advance only after full integrity checks.
 
+The first real eight-node screen (`3211065`) was stopped after the pinned
+dataset card revealed imputed, forward-filled bars in the reused 1.5 cache.
+It has verified private backups but no valid scientific result. Its panel,
+manifests, optimizer state and checkpoints are incompatible with the corrected
+`experiment_1.6_masked` root and cannot be used for continuation or public
+selection. The same node/hour authorization applies to a corrected fresh
+screen once its new source, manifests and checks are frozen.
+
 The main comparison remains **unapproved pending the user's screen review**.
 If approved later, its hours, Slurm request, software config, seed policy and
 common completed prefix require a separate dated decision. A request for a

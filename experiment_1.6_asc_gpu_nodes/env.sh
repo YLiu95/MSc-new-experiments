@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 export PATH="$HOME/.venvs/experiment-1.6-gpu/bin:$PATH"
-export ARTIFACT_ROOT="${ARTIFACT_ROOT:-/net/tscratch/people/$(id -un)/experiments/experiment_1.6}"
+export ARTIFACT_ROOT="${ARTIFACT_ROOT:-/net/tscratch/people/$(id -un)/experiments/experiment_1.6_masked}"
 IFS=: read -r -a library_paths <<< "${LD_LIBRARY_PATH:-}"
 filtered_library_path=""
 for runtime_path in \

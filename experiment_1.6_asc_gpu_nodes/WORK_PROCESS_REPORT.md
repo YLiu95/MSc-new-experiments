@@ -1,8 +1,8 @@
 # Experiment 1.6 Work Process
 
-Date: 2026-09-29 (UTC+02:00). Status: implementation and CPU validation;
-overnight GPU training and final publication require an explicit node-count and
-queue-wait decision. No scheduler forecast below reserves a node.
+Date: 2026-09-29 (UTC+02:00). Status: first eight-node screen stopped and
+invalidated after a source-imputation audit; corrected data prepared separately.
+No model has been published. No scheduler forecast below reserves a node.
 
 ## Evidence obtained
 
@@ -12,24 +12,31 @@ queue-wait decision. No scheduler forecast below reserves a node.
   token identifies `YL95`; the pinned training dataset is private and declares
   ODC-BY in its card. No destination or license is treated as proof of vendor
   price-data redistribution rights.
-- The pinned 1.5 private source cache reproduced a FP64 training-only scale of
-  3.4060786363283126 on 76,479,949 finite returns. New historical-streak
-  indexes include 13 markets and 24,022 training-seen identities. The calendar
-  union has no gaps of ten or more weekdays, but exchange-session calendars
-  have not been independently certified. Twelve markets have no weekend
-  sessions; IN has three market-wide weekend dates (2019-10-27: 3,316 quotes;
-  2020-11-14: 3,401; 2025-02-01: 4,254), plausibly special sessions rather
-  than stray timestamps. Invalid prices were recorded and masked, not
-  forward-filled.
+- The first, now **invalidated**, 1.5 return-cache preparation had a scale of
+  3.4060786363283126 on 76,479,949 training returns and 24,022 identity
+  rows. It unknowingly retained source-forward-filled prices, so these are
+  not valid 1.6 scientific measurements. The calendar union has no gaps of
+  ten or more weekdays, but exchange-session calendars are not independently
+  certified. Twelve markets have no weekend sessions; IN has three market-wide
+  weekend dates (2019-10-27: 3,316 quotes; 2020-11-14: 3,401;
+  2025-02-01: 4,254), plausibly special sessions rather than stray timestamps.
+- Corrected private root `experiment_1.6_masked` uses the pinned Parquet
+  `flag_imputed` column: 36,089 flagged prices across all 13 markets (7,758
+  in train, 9,149 in validation) and both touching returns are rejected.
+  This excludes 61,505 previously finite returns. The new FP64 training-only
+  scale is 3.40288677815176 on 76,467,613 finite returns; the training
+  identity vocabulary has 24,010 rows. The dataset card explicitly states
+  that its Yahoo-derived universe is **survivors only**.
 - All 638,817 training tasks are historically feasible; issuing 320 scheduled
   samples (including catalogue setup) took 2.611 seconds on the CPU tunnel
   host. This is a sampler diagnostic, not a full data-loader throughput or
   GPU-memory result.
-- Frozen validation: 51,712 primary baskets (1,616 monitoring) and 19,456
-  held-out-combination baskets. Primary has 3,352,558 observed and 1,554
-  missing label occurrences, 99 degenerate basket correlations, and 3 missing
-  market/task cells. The baseline primary macro Spearman is -0.0001899445 for
-  positive momentum, +0.0001899445 for reversal, 0 for constant scores.
+- New frozen validation: 51,712 primary baskets (1,616 monitoring) and
+  19,456 held-out-combination baskets with a different manifest digest.
+  Corrected primary has 3,344,940 observed and 9,172 missing label
+  occurrences, 123 degenerate correlations and 3 missing market/task cells.
+  Corrected baseline macro Spearman is momentum +0.001052323, reversal
+  -0.001052323, constant scores 0; the initial baseline is invalidated.
 - The current CPU-only JupyterHub job is scheduled to end at 2026-09-29
   23:31:41; the separate `training` GPU reservation ends on 2026-09-30 at
   08:00. The batch job must finish private backups before 07:40 or earlier
@@ -42,8 +49,8 @@ queue-wait decision. No scheduler forecast below reserves a node.
   then approved an eight-node, up-to-twelve-hour request with a 60-second
   maximum wait and **manual stop/review after the screen**. The productive
   2/3/3-node layout, budget amendment and release policy are in
-  [CAPACITY_AMENDMENT.md](CAPACITY_AMENDMENT.md). No overnight training job ID
-  exists until the revised multi-node checks and actual `sbatch` succeed.
+  [CAPACITY_AMENDMENT.md](CAPACITY_AMENDMENT.md). Failed starts and the
+  stopped diagnostic below have retained IDs but no valid model result.
 - Private TensorBoard 2.21 runs on 127.0.0.1:16007 on this Jupyter host;
   HTTP 200 and the saved smoke run were verified. No public tunnel was opened.
 - Cross-node diagnostic `3211008` used all eight A100 nodes for three
@@ -73,9 +80,32 @@ queue-wait decision. No scheduler forecast below reserves a node.
   DP=24 BF16 gradient checks within tolerance. Its IPv6 socket fallback
   warnings did not stop NCCL. Both failed screen IDs are retained in the
   ledger; neither trained a sample nor wrote a checkpoint.
+- Job `3211065` ran on all eight nodes and reached A=275, B=220, C=220
+  updates before the source-card imputation policy error was discovered.
+  The stop marker caused an orderly exit at 19:36:26 (COMPLETED/0).
+  Each arm's latest/best/logs were rehashed in a second private home copy:
+  A 310,841,848 bytes, B 310,451,170 bytes, C 311,690,684 bytes.
+  These old-root checkpoints and baselines are **invalidated diagnostics**;
+  they are not eligible for resume, selection or HF publication. The old
+  scratch root and NFS backups were preserved without overwriting.
+- Corrected one-node/eight-A100 smoke `3211083` (new root and policy) completed
+  0:0 in 7m19s. It ran the entire corrected primary suite at step 0 and
+  after one real optimizer update, keeping trained best/latest at step 1.
+  Macro Spearman moved from -0.009125774 to -0.009068159; this tiny,
+  single-update difference is an operational check, **not skill evidence**.
+  A second private copy of its best/latest/logs (39 files, 309,185,430
+  bytes) was rehashed at 20:01:38, before its 20:13:38 backup deadline.
+  TensorBoard port 16007 now serves only corrected event paths (HTTP 200).
+- The source dataset card declares ODC-BY for its compilation but says the
+  underlying Yahoo Finance data is intended for personal/noncommercial use.
+  Rights to publish derived weights and the ticker vocabulary have not been
+  independently confirmed, so public HF upload remains gated.
 - The inherited home quota is 10 GiB. A failed installation was moved to
   private scratch, with a home-path symlink; the separate pinned environment
   then installed and passed `pip check`. The 1.5 environment was left alone.
+  The existing pip cache was also moved without deletion to private scratch,
+  keeping its home symlink and freeing roughly 1.7 GiB for corrected-run
+  independent NFS backups.
 - A `pip-audit` scan of the full resolved lock initially found advisories in
   `pip`, `setuptools`, `pyarrow`, `pytest`, and `python-dotenv`. The direct pins
   were amended to published fixed versions, the complete CPU suite passed,

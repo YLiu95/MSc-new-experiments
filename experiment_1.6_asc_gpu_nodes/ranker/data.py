@@ -13,6 +13,20 @@ import numpy as np
 from .contract import DATASET, LENGTHS, MARKETS, REVISION, Task, labels_from_returns, price_to_returns, split_masks
 
 
+PREPARATION_POLICY = "exclude_imputed_price_and_both_adjacent_returns_v1"
+
+
+def mask_imputed_returns(raw: np.ndarray, imputed_prices: np.ndarray) -> tuple[np.ndarray, int]:
+    if raw.shape != imputed_prices.shape:
+        raise ValueError("Source imputation mask must align with the market return panel")
+    affected = np.array(imputed_prices, dtype=bool, copy=True)
+    affected[:, 1:] |= imputed_prices[:, :-1]
+    returns = np.array(raw, dtype=np.float32, copy=True)
+    excluded = int(np.count_nonzero(np.isfinite(returns) & affected))
+    returns[affected] = np.nan
+    return returns, excluded
+
+
 def write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -67,6 +81,38 @@ def read_market(paths: list[Path]) -> tuple[np.ndarray, np.ndarray, list[str], d
     return price_to_returns(prices), dates, names, {
         "observations": observations, "invalid_prices_rejected": invalid_prices, "duplicates_rejected": 0,
     }
+
+
+def source_imputation_mask(paths: list[Path], dates: np.ndarray, symbols: list[str]) -> tuple[np.ndarray, dict]:
+    import pandas as pd
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+
+    if not paths:
+        raise ValueError("Pinned source Parquet shards are required to exclude imputed prices")
+    imputed = np.zeros((len(symbols), len(dates)), dtype=bool)
+    audit = {"source_imputed_prices_rejected": 0, "source_imputed_train_prices": 0,
+             "source_imputed_validation_prices": 0}
+    for path in paths:
+        table = pq.read_table(path, columns=["ticker", "date", "flag_imputed"])
+        flags = pc.fill_null(table["flag_imputed"], False).to_numpy(zero_copy_only=False).astype(bool)
+        if not flags.any():
+            continue
+        marked = np.flatnonzero(flags)
+        ticker_index = pd.Categorical(table["ticker"].to_pandas().iloc[marked], categories=symbols).codes.astype(np.int64)
+        marked_dates = table["date"].to_numpy(zero_copy_only=False).astype("datetime64[D]")[marked]
+        date_index = np.searchsorted(dates, marked_dates)
+        if (ticker_index < 0).any() or (date_index >= len(dates)).any() or not np.array_equal(dates[date_index], marked_dates):
+            raise ValueError(f"Source imputation flag does not align with market calendar: {path.name}")
+        linear = ticker_index * len(dates) + date_index
+        if len(np.unique(linear)) != len(linear) or imputed.ravel()[linear].any():
+            raise ValueError(f"Duplicate source-imputation observation: {path.name}")
+        imputed[ticker_index, date_index] = True
+        audit["source_imputed_prices_rejected"] += len(marked)
+        audit["source_imputed_train_prices"] += int((marked_dates <= np.datetime64("2018-12-31")).sum())
+        audit["source_imputed_validation_prices"] += int(((marked_dates > np.datetime64("2018-12-31"))
+                                                            & (marked_dates <= np.datetime64("2022-12-31"))).sum())
+    return imputed, audit
 
 
 def source_market(source: Path | None, market: str, snapshot: Path | None) -> tuple[np.ndarray, np.ndarray, list[str], dict]:
@@ -150,7 +196,8 @@ def prepare(root: Path, source: Path | None = None) -> Path:
     marker = panel_root / "meta.json"
     if marker.exists():
         meta = json.loads(marker.read_text())
-        if meta["revision"] != REVISION or (source is not None and meta["source"] != str(source.resolve())):
+        if (meta["revision"] != REVISION or meta.get("preparation_policy") != PREPARATION_POLICY
+                or (source is not None and meta["source"] != str(source.resolve()))):
             raise ValueError("Prepared panel provenance differs from the requested revision/source")
         return panel_root
     snapshot = None
@@ -159,6 +206,10 @@ def prepare(root: Path, source: Path | None = None) -> Path:
         meta = json.loads((source / "meta.json").read_text())
         if (meta["dataset"], meta["revision"]) != (DATASET, REVISION):
             raise ValueError("Cached source is not the pinned dataset revision")
+        snapshot = (source.parent / "cache" / "hf" / ("datasets--" + DATASET.replace("/", "--"))
+                    / "snapshots" / REVISION)
+        if not snapshot.is_dir():
+            raise ValueError("Cached returns require their pinned Parquet snapshot for imputation flags")
     else:
         from dotenv import load_dotenv
         from huggingface_hub import snapshot_download
@@ -170,7 +221,13 @@ def prepare(root: Path, source: Path | None = None) -> Path:
     raw_markets = []
     for market in MARKETS:
         raw, dates, symbols, audit = source_market(source, market, snapshot)
-        raw_markets.append((raw, dates, symbols, audit))
+        paths = sorted((snapshot / "data" / market).glob("*.parquet"))
+        imputed, imputation_audit = source_imputation_mask(paths, dates, symbols)
+        corrected, excluded = mask_imputed_returns(raw, imputed)
+        audit.update(imputation_audit)
+        audit["returns_excluded_due_imputation"] = excluded
+        raw_markets.append((corrected, dates, symbols, audit))
+        del imputed
     scale, statistics = fit_scale([(raw, dates) for raw, dates, _, _ in raw_markets])
     vocabulary = []
     report = []
@@ -194,7 +251,9 @@ def prepare(root: Path, source: Path | None = None) -> Path:
         report.append(info)
         print(json.dumps({"event": "market_prepared", "market": market, "scale": scale, "tickers": len(symbols)}), flush=True)
     write_json(panel_root / "vocabulary.json", vocabulary)
-    metadata = {"dataset": DATASET, "revision": REVISION, "source": str(source) if source is not None else str(snapshot),
+    metadata = {"dataset": DATASET, "revision": REVISION, "preparation_policy": PREPARATION_POLICY,
+                "source_reports_survivors_only": True,
+                "source": str(source) if source is not None else str(snapshot),
                 "return_scale_pct": scale, "scale_statistics": statistics, "n_tickers": len(vocabulary),
                 "markets": report, "train_end": "2018-12-31", "val_end": "2022-12-31", "embargo": 90,
                 "input_clip": 8.0, "raw_dtype": "float32", "input_dtype": "float16"}

@@ -161,6 +161,7 @@ def model_files(root: Path, arm: str, source_report: dict) -> dict[str, Path]:
     metadata = json.loads((root / "panel" / "meta.json").read_text())
     write_json(publication / "reconstruction.json", {
         "dataset": DATASET, "revision": REVISION, "dataset_license": "odc-by",
+        "preparation_policy": metadata["preparation_policy"],
         "return_scale_pct": metadata["return_scale_pct"], "input_clip": metadata["input_clip"],
         "training_identities": metadata["n_tickers"], "selected_arm": arm,
         "best_step": best_state["step"], "latest_step": latest_state["step"],

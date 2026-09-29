@@ -30,7 +30,13 @@ python -m ranker.evaluate baselines --root "$ARTIFACT_ROOT"
 
 The source cache is accepted only when its dataset and revision exactly match
 `YL95/new_experiment_1-data@bcbbefdbe2313673895eb1a0d354747a9f1624fa`.
-Without that private cache, omit `--source` to download the pinned Parquet revision
+Its pinned Parquet shards must also be present to read `flag_imputed` and mask
+both returns touching each forward-filled price **before** fitting the scale
+or selecting a historical basket. The default artifact root is the separate
+`/net/tscratch/people/<actual-user>/experiments/experiment_1.6_masked`;
+the earlier `experiment_1.6` root contains invalidated diagnostic runs and
+must not be used for continuation or public export. Without the private cache,
+omit `--source` to download the pinned Parquet revision
 using an authorized HF token loaded inside the download process. Raw returns,
 eligibility indexes, evaluation basket manifests, and sampler ledgers stay under
 `$ARTIFACT_ROOT`; never commit or upload those panels or per-sample labels.
@@ -111,18 +117,21 @@ aggregate reports and that arm's TensorBoard events to
 `YL95/experiment-1.6-asc-gpu-nodes`. The destination does not yet exist; the
 publication command verifies account/dataset metadata and creates a public repo
 only when complete trained artifacts and a verified private source commit exist.
+The dataset card describes Yahoo-origin, survivors-only data intended for
+personal/noncommercial use; a declared ODC-BY compilation license alone does
+not prove that public weights and ticker identities may be redistributed.
 Its root README is solely a link to the full private GitHub model card, so public
 readers without GitHub access will not be able to read that card. A public full
 optimizer/sampler checkpoint is trusted-source-only; do not unpickle untrusted
 material. HF repository history may retain old blobs even when its head contains
 only the selected pair.
 
-For private TensorBoard, start `tensorboard --logdir "$ARTIFACT_ROOT/C/runs"
+For private TensorBoard, use the corrected root and run `tensorboard
+--logdir_spec="A:$ARTIFACT_ROOT/A/runs,B:$ARTIFACT_ROOT/B/runs,C:$ARTIFACT_ROOT/C/runs,corrected_smoke:$ARTIFACT_ROOT/smoke/C/runs"
 --host 127.0.0.1 --port 16007` on the current authorized host and forward the
 port through VS Code. Do not publish a live tunnel or per-sample financial data.
-The current Jupyter host serves named A/B/C and smoke runs on loopback port
-**16007** (HTTP 200 verified); this service must be restarted after that
-Jupyter allocation ends.
+The current Jupyter host serves only corrected event paths on loopback port
+**16007** (HTTP 200 verified); restart it after that Jupyter allocation ends.
 
 ## Remaining research gates
 
