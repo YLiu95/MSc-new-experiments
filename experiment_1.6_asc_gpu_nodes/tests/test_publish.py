@@ -9,6 +9,7 @@ from ranker.checkpoints import save_checkpoint
 from ranker.publish import GITHUB_FOLDER, git_blob, github_files, model_files
 from ranker.data import PREPARATION_POLICY, write_json
 from ranker.model import ModelConfig, RankingModel
+from scripts.publish_arms import REPOSITORIES, files_for_arm
 
 
 class Ledger:
@@ -75,3 +76,66 @@ def test_public_file_set_is_one_verifiable_best_and_latest_without_private_panel
     assert all("raw.npy" not in name and ".env" not in name for name in files)
     assert files["README.md"].read_text() == ("[Private model card](https://github.com/"
         "YLiu95/MSc-new-experiments/blob/abc123/experiment_1.6_asc_gpu_nodes/MODEL_CARD.md)\n")
+
+
+def three_repo_fixture(tmp_path, arm, best_step, latest_step):
+    root = tmp_path / "artifacts"
+    selected = root / arm
+    config = ModelConfig(tickers=6, width=32, heads=4, feedforward=64,
+                         temporal_blocks=1, cross_blocks=1, dropout=0)
+    model = RankingModel(config)
+    optimizer = torch.optim.AdamW(model.parameters())
+    saved_config = {"model": asdict(config), "arm": arm,
+                    "data": {"preparation_policy": PREPARATION_POLICY},
+                    "validation": {"primary": "frozen-hash"}}
+    write_json(selected / "config.json", saved_config)
+    save_checkpoint(selected, model, optimizer,
+                    {"step": best_step, "scheduled": best_step * 320, "world": 1},
+                    Ledger(), saved_config, True)
+    if latest_step != best_step:
+        save_checkpoint(selected, model, optimizer,
+                        {"step": latest_step, "scheduled": latest_step * 320, "world": 1},
+                        Ledger(), saved_config, False)
+    write_json(selected / "TRAINING_DONE.json", {"step": latest_step})
+    write_json(selected / "reports" / "training_summary.json", {"full_validation_selection": True})
+    (selected / "runs").mkdir()
+    (selected / "runs" / "events.out.tfevents.test").write_text("aggregate only")
+    write_json(root / "panel" / "meta.json", {"revision": "bcbbefdbe2313673895eb1a0d354747a9f1624fa",
+                                                   "preparation_policy": PREPARATION_POLICY,
+                                                   "return_scale_pct": 3.4029, "input_clip": 8, "n_tickers": 6})
+    write_json(root / "panel" / "vocabulary.json", [{"market": "AU", "ticker": "A"}])
+    write_json(root / "panel" / "evaluation" / "val-primary.json", {"sha256": "frozen-hash"})
+    (root / "panel" / "raw.npy").write_bytes(b"private panel")
+    for name in ("baselines.json", "evaluation_registry.json"):
+        write_json(root / "reports" / name, {})
+    write_json(root / "control" / "publication_authorization.json",
+               {"confirmed_by_user": True, "training_root": str(root.resolve())})
+    source = {"repository": "YLiu95/MSc-new-experiments", "private": True,
+              "branch": "main", "commit": "abc123"}
+    return root, source
+
+
+def test_three_public_repositories_skip_duplicate_latest(tmp_path):
+    assert set(REPOSITORIES) == {"A", "B", "C"}
+    assert REPOSITORIES["C"] == "YL95/experiment-1.6-asc-gpu-nodes"
+    assert len(set(REPOSITORIES.values())) == 3
+    root, source = three_repo_fixture(tmp_path, "B", 1, 1)
+    paths, same = files_for_arm(root, "B", source)
+    assert same and not any(name.startswith("latest/") for name in paths)
+    assert {"best/weights.safetensors", "best/inference_manifest.json",
+            "runs/events.out.tfevents.test"}.issubset(paths)
+    assert paths["README.md"].read_text().startswith("[Private model card](https://")
+    assert not any("raw.npy" in name for name in paths)
+    assert json.loads(paths["reconstruction.json"].read_text())["public_recovery_included"] is False
+    (root / "control" / "publication_authorization.json").unlink()
+    with pytest.raises(FileNotFoundError):
+        files_for_arm(root, "B", source)
+
+
+def test_distinct_latest_is_complete_even_when_best_remains_initial(tmp_path):
+    root, source = three_repo_fixture(tmp_path, "A", 0, 1)
+    paths, same = files_for_arm(root, "A", source)
+    assert not same
+    assert {"latest/recovery.pt", "latest/sampler.sqlite", "latest/manifest.json",
+            "latest/COMPLETE", "latest/rng-0000.pt"}.issubset(paths)
+    assert json.loads(paths["reconstruction.json"].read_text())["best_at_initialization"] is True

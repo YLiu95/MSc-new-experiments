@@ -98,8 +98,12 @@ No model has been published. No scheduler forecast below reserves a node.
   TensorBoard port 16007 now serves only corrected event paths (HTTP 200).
 - The source dataset card declares ODC-BY for its compilation but says the
   underlying Yahoo Finance data is intended for personal/noncommercial use.
-  Rights to publish derived weights and the ticker vocabulary have not been
-  independently confirmed, so public HF upload remains gated.
+  The user states that they created the original data, that the Yahoo
+  attribution in that card is inaccurate, and authorizes public backups of
+  the A/B/C weights, ticker vocabulary, distinct optimizer/sampler state and
+  aggregate TensorBoard events. The discrepancy is recorded in the private
+  model card rather than silently rewriting a pinned dataset revision.
+  Publication authorization is stored outside Git under the corrected root.
 - The inherited home quota is 10 GiB. A failed installation was moved to
   private scratch, with a home-path symlink; the separate pinned environment
   then installed and passed `pip check`. The 1.5 environment was left alone.
@@ -161,10 +165,12 @@ an uninterrupted run. This is **not** a full-model GPU resume proof.
   detached submission; abort within the chosen 60-second wait if not granted.
 4. Review matched A/B/C learning screens and complete private backup evidence
    before approving a full 30,000-update comparison or confirmatory seeds.
-5. After a selected trained model and rights review, verify the private source
-   commit and publish exactly one best/latest pair and approved aggregate logs
-   to the requested public HF repo. Complete frozen probes/test/bootstrap after
-   selection, not as a basis for choosing the checkpoint.
+5. After all three corrected arms finish with verified private backups, verify
+  the private source commit and publish A/B/C to their separate requested
+  public HF repos; omit a duplicate `latest/` when best and latest coincide.
+  The source-card provenance discrepancy remains explicitly disclosed.
+  Complete frozen probes/test/bootstrap after selection, not as a basis for
+  choosing any arm's best checkpoint.
 
 This report should be extended with official Slurm job IDs, GPU-hours, durations,
 peak memory per GPU, recovery tolerances, validation and remote digest evidence

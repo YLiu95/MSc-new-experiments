@@ -39,8 +39,11 @@ Data uses private `YL95/new_experiment_1-data` at revision
 `bcbbefdbe2313673895eb1a0d354747a9f1624fa`, `adj_close_clean`; its card
 declares ODC-BY for its compilation and reports Yahoo Finance as its source.
 It is **survivors only**: delisted firms' histories are largely absent, not
-merely missing some future labels. Yahoo's underlying personal/noncommercial
-terms do not establish a right to publish derived weights and identities.
+merely missing some future labels. The owner states they created the original
+data and that the card's Yahoo attribution is inaccurate, and has authorized
+the public A/B/C model backups. This discrepancy with the pinned card must be
+resolved in the source documentation; neither account should be silently
+treated as independently verified.
 Retrospective adjustment and cleaning also preclude a point-in-time portfolio
 claim. The source cache rejected 111,523 invalid price observations across
 13 markets. Corrected 1.6 preparation excluded its 36,089 forward-filled,
@@ -105,10 +108,15 @@ training config, source digest and locked software versions are needed for
 logical continuation on the same DP layout. Trained tensor and optimizer
 states are not interchangeable with Experiment 1.5.
 
-The selected public repository is specified to hold one best and one latest
-pair, the training-seen vocabulary, aggregate reports and approved TensorBoard
-events. Older blobs may remain in Git/LFS history. Public weights, vocabulary
-and optimizer/sampler state are public even though this explanatory card and
-the training corpus are private. Dataset and derivative redistribution terms
-must be confirmed before the first upload. No license for this source/model is
-asserted without a rights review.
+The owner requested three public repositories: A at
+`YL95/experiment-1.6-asc-gpu-nodes-arm-a`, B at
+`YL95/experiment-1.6-asc-gpu-nodes-arm-b`, and C at
+`YL95/experiment-1.6-asc-gpu-nodes`. Each contains one arm's selected best,
+distinct latest recovery state, training-seen vocabulary, aggregate reports
+and TensorBoard events. If best and latest are the same checkpoint, public
+`latest/` is omitted as requested; full private recovery remains in home
+storage. A best at step 0 must be labeled an untrained selection, not a
+learned improvement. Older blobs may remain in Git/LFS history. Public
+weights, vocabulary and any distinct optimizer/sampler state are public
+even though this explanatory card and raw corpus are private. No license
+for this source/model is asserted by the backup operation.

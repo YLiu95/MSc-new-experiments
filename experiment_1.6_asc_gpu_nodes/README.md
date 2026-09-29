@@ -109,22 +109,28 @@ formats to the **private** `YLiu95/MSc-new-experiments` repository under
 `experiment_1.6_asc_gpu_nodes/`. It verifies branch, privacy, blob digests,
 commit and remote tree without embedding secrets in Git URLs.
 
-After the learning screen and a selected trained checkpoint exist, run
-`python -m ranker.publish model --root "$ARTIFACT_ROOT" --arm C` (or the
-explicitly selected arm) to publish **one** best inference export, **one** latest
-full resumable state, the identity vocabulary, reconstruction metadata,
-aggregate reports and that arm's TensorBoard events to
-`YL95/experiment-1.6-asc-gpu-nodes`. The destination does not yet exist; the
-publication command verifies account/dataset metadata and creates a public repo
-only when complete trained artifacts and a verified private source commit exist.
-The dataset card describes Yahoo-origin, survivors-only data intended for
-personal/noncommercial use; a declared ODC-BY compilation license alone does
-not prove that public weights and ticker identities may be redistributed.
-Its root README is solely a link to the full private GitHub model card, so public
-readers without GitHub access will not be able to read that card. A public full
-optimizer/sampler checkpoint is trusted-source-only; do not unpickle untrusted
-material. HF repository history may retain old blobs even when its head contains
-only the selected pair.
+The user subsequently requested **three public arm-specific HF repositories**:
+`YL95/experiment-1.6-asc-gpu-nodes-arm-a`,
+`YL95/experiment-1.6-asc-gpu-nodes-arm-b`, and the originally named
+`YL95/experiment-1.6-asc-gpu-nodes` for C. After all three arms finish and
+their private home backups verify, `scripts/publish_arms.sh` may run as an
+independent Slurm `afterok` dependent batch job. For a manual retry, use
+`python -m scripts.publish_arms --root "$ARTIFACT_ROOT" --screen-job-id ID`.
+Each repo receives that arm's best inference export, a distinct latest full
+recovery state only when best and latest differ, training vocabulary,
+reconstruction metadata, aggregate reports and per-arm TensorBoard events.
+If both pointers name the same checkpoint, only `best/` is uploaded; the full
+resumable latest remains in the verified private home backup. No raw panels,
+per-sample predictions or labels are uploaded.
+
+The owner has explicitly stated that they created the original data and that
+the pinned dataset card's Yahoo attribution is incorrect; this assertion is
+recorded separately from the conflicting pinned card until its provenance is
+corrected. Each public repo's root README is solely a link to the full private
+GitHub model card, so readers without GitHub access may see 404. Public
+optimizer/sampler files are trusted-source-only; do not unpickle arbitrary
+material. Repository history may retain old blobs even if the head contains
+only the requested pair.
 
 For private TensorBoard, use the corrected root and run `tensorboard
 --logdir_spec="A:$ARTIFACT_ROOT/A/runs,B:$ARTIFACT_ROOT/B/runs,C:$ARTIFACT_ROOT/C/runs,corrected_smoke:$ARTIFACT_ROOT/smoke/C/runs"
