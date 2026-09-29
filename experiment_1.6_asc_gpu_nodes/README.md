@@ -8,6 +8,14 @@ The private [MODEL_CARD.md](MODEL_CARD.md) distinguishes measurements from propo
 The approved 8-node resource change is recorded in
 [CAPACITY_AMENDMENT.md](CAPACITY_AMENDMENT.md).
 
+The corrected screen `3211116` completed 2,000 updates per A/B/C arm in
+20m36s and released its eight nodes. Full validation macro Spearman was
+A 0.06422, B 0.05862, C 0.05700; this is not a test or investment result.
+All three best/latest pairs point to the same final update, so automatic
+public HF backup `3211137` uploaded best only per arm. Full latest optimizer,
+RNG and sampler recovery remains in verified private home backups. Main
+training stopped for the user's review and has **not** started automatically.
+
 ## Private environment and prepared data
 
 Use Python 3.11.5 in `$HOME/.venvs/experiment-1.6-gpu` and install

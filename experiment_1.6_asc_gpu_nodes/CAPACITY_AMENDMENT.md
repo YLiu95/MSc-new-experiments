@@ -52,6 +52,14 @@ manifests, optimizer state and checkpoints are incompatible with the corrected
 selection. The same node/hour authorization applies to a corrected fresh
 screen once its new source, manifests and checks are frozen.
 
+The corrected eight-node screen `3211116` began at 20:03:58, finished all
+three arms at 2,000 updates and released its nodes at 20:24:34, using about
+21.97 allocated GPU-hours rather than holding the requested 11h50m walltime.
+Private backups and the three arm-specific public best exports were verified.
+The requested latest checkpoints coincided with best at step 2,000 and were
+therefore retained only as full private recovery. Main training remains a
+separate decision after reviewing these results.
+
 The main comparison remains **unapproved pending the user's screen review**.
 If approved later, its hours, Slurm request, software config, seed policy and
 common completed prefix require a separate dated decision. A request for a

@@ -1,8 +1,9 @@
 # Experiment 1.6 Work Process
 
-Date: 2026-09-29 (UTC+02:00). Status: first eight-node screen stopped and
-invalidated after a source-imputation audit; corrected data prepared separately.
-No model has been published. No scheduler forecast below reserves a node.
+Date: 2026-09-29 (UTC+02:00). Status: corrected eight-node A/B/C screen
+completed and all three public best-only repositories verified. The first
+screen remains invalidated; main training awaits the user's review.
+No scheduler forecast below reserves a node.
 
 ## Evidence obtained
 
@@ -96,6 +97,36 @@ No model has been published. No scheduler forecast below reserves a node.
   A second private copy of its best/latest/logs (39 files, 309,185,430
   bytes) was rehashed at 20:01:38, before its 20:13:38 backup deadline.
   TensorBoard port 16007 now serves only corrected event paths (HTTP 200).
+- Corrected eight-node job `3211116` began at 20:03:58 within the user's
+  60-second queue limit, completed 0:0 at 20:24:34 and released all 64 A100s
+  after 20m36s (about 21.97 allocated GPU-hours, far below the requested
+  11h50m wall ceiling). A/B/C each completed 2,000 optimizer updates and
+  640,000 scheduled samples without a zero-informative batch. Informative
+  sample totals were A 636,265 and B/C 639,095; B/C saved sampler ledgers
+  are byte-identical. Complete primary-suite best macro Spearman at step
+  2,000: A 0.064220, B 0.058617, C 0.057004, against momentum 0.001052.
+  C trails its matched unconditioned B by 0.001613 and leads on only 2 of
+  8 registered primary tasks. This is not a test, paired uncertainty interval
+  or proof of conditioning harm/benefit. A's fixed cell scores 0.061477
+  versus C's 0.042956, but their task exposure differs. Train loss declined
+  and final score variance remained nonzero in all arms.
+- The independent full-recovery home backup for job `3211116` was rehashed:
+  A 311,424,473 bytes at 20:20:35, B 326,649,019 at 20:24:23 and C
+  327,888,504 at 20:24:30. The job's scheduled wall EndTime was 07:53:58,
+  with a 06:07:28 planned training stop and a 07:33:58 backup deadline.
+  Actual early exit happened only after these verified copies were made.
+- CPU-only dependent uploader `3211137` completed 0:0 at 20:24:56. The owner
+  requested three public repos: `YL95/experiment-1.6-asc-gpu-nodes-arm-a`,
+  `YL95/experiment-1.6-asc-gpu-nodes-arm-b`, and
+  `YL95/experiment-1.6-asc-gpu-nodes` for C. All three contain their
+  safetensors best export, reconstruction/vocabulary metadata, aggregate
+  validation/history/baseline reports and that arm's TensorBoard events.
+  All three best and latest pointers coincide at step 2,000, so **no public
+  latest directory** was uploaded by the user's instruction. Full optimizer,
+  RNG and sampler recovery remains in the private home backups. All 13
+  recorded files per repo were independently checked without authentication
+  against remote sizes and hashes; public verification reports are under
+  corrected `reports/`. This is a backup, not a profitability claim.
 - The source dataset card declares ODC-BY for its compilation but says the
   underlying Yahoo Finance data is intended for personal/noncommercial use.
   The user states that they created the original data, that the Yahoo
@@ -155,24 +186,21 @@ an uninterrupted run. This is **not** a full-model GPU resume proof.
 
 ## Open gates
 
-1. Confirm each exchange calendar and public derivative/identity rights.
-2. Confirm bound-CPU throughput during a production-shaped screen and test
-  a full-model resume after the revised binding. Complete-manifest validation
-  and inference export passed the real GPU smoke, but the screen must show
-  declining loss before scaling.
-3. Pass a real cross-node NCCL gradient/rendezvous check for the amended
-  2/3/3 layout and recheck the eight-node scheduler start immediately before
-  detached submission; abort within the chosen 60-second wait if not granted.
-4. Review matched A/B/C learning screens and complete private backup evidence
-   before approving a full 30,000-update comparison or confirmatory seeds.
-5. After all three corrected arms finish with verified private backups, verify
-  the private source commit and publish A/B/C to their separate requested
-  public HF repos; omit a duplicate `latest/` when best and latest coincide.
-  The source-card provenance discrepancy remains explicitly disclosed.
-  Complete frozen probes/test/bootstrap after selection, not as a basis for
-  choosing any arm's best checkpoint.
+1. The dataset card's Yahoo attribution conflicts with the owner's statement;
+  reconcile provenance in the source dataset separately. Empirical market
+  calendars have not been independently exchange-certified. Survivorship
+  bias cannot be removed with a label mask.
+2. Review A/B/C task-wise results before approving a main 30,000-update
+  comparison or additional seeds. The screen's small B/C difference has no
+  paired date-block uncertainty interval; A versus C is not matched task
+  exposure. Do not automatically continue this screen into main training.
+3. A corrected full-model multi-node next-update resume is not yet proven;
+  preserve DP=16 for A and DP=24 for B/C if main continuation is approved.
+4. Evaluate frozen downstream embedding probes, held-out task combinations,
+  chronological test, and the registered moving-block bootstrap only after
+  settings/selection freeze, never to retune from a held-out result.
 
-This report should be extended with official Slurm job IDs, GPU-hours, durations,
-peak memory per GPU, recovery tolerances, validation and remote digest evidence
-as execution progresses. Smoke checkpoints exist privately; no official
-training run or public model has been claimed yet.
+This report records the completed screen and public backup, not a final
+forecasting study. The full-model all-GPU peak was measured on synthetic
+worst-case batches; future main runs must monitor per-rank memory and
+checkpoint/upload time again. HF repository history may retain older blobs.

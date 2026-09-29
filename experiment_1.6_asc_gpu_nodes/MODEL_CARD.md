@@ -6,11 +6,10 @@ file at a verified private GitHub commit. An unauthenticated reader may get 404.
 
 ## Status and intended use
 
-As of 2026-09-29, the research pipeline and pinned validation suites exist,
-with a corrected one-update GPU recovery smoke and an **invalidated** first
-A/B/C screen, but no valid learning
-screen result, held-out/task-transfer finding, test result, frozen
-downstream probe, investment return, or profitability claim has been established.
+As of 2026-09-29, a corrected A/B/C screen completed 2,000 updates per arm
+after the first screen was **invalidated** for source-imputed returns. It is a
+chronological validation comparison, not a held-out/task-transfer finding,
+test result, frozen downstream probe, investment return, or profitability claim.
 Weights must not be presented as a calibrated expected return or probability.
 Score ordering is a within-market preference for the specific $(L,H,K)$ and
 comparison basket. Do not use this experimental system as financial advice.
@@ -87,6 +86,33 @@ Pair accuracy counts tied predicted scores as half; top/bottom selections
 report observed-outcome counts. No annualized Sharpe or portfolio claim is
 supported without delisting treatment, transaction costs, and nonoverlap work.
 
+## Corrected Learning Screen (2026-09-29)
+
+Batch job `3211116` completed 0:0 after 20 minutes 36 seconds on 64 A100s,
+about 21.97 allocated GPU-hours. It used the imputation-masked dataset and
+finished 2,000 updates / 640,000 scheduled attempts per arm. Every best
+checkpoint was selected at step 2,000 using the complete registered primary
+suite, and is also its arm's latest checkpoint. The separate automated CPU
+upload job `3211137` and all three private full-recovery backups completed.
+
+| Arm | Data-parallel ranks | Informative samples | Primary macro Spearman | (256,7,64) Spearman | Last score variance |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A: fixed task | 16 | 636,265 | 0.064220 | 0.061477 | 0.03624 |
+| B: unconditioned variable task | 24 | 639,095 | 0.058617 | 0.044397 | 0.05534 |
+| C: conditioned variable task | 24 | 639,095 | 0.057004 | 0.042956 | 0.05097 |
+
+B and C have byte-identical saved sampler ledgers and matching informative
+sample counts. C trails B by 0.001613 primary Spearman at this prefix and
+leads on only two of the eight primary tasks. This does **not** establish
+statistically significant negative transfer; no registered 2,000-resample
+date-block interval or test evaluation has been run. A versus C on the fixed
+cell is not a conditioning-only comparison because A had fixed-task exposure.
+Each arm's train loss decreased from early values and its score variance
+remained nonzero; neither property proves out-of-sample skill. The baseline
+momentum macro on the same baskets is +0.001052. Survivorship and adjusted-
+price limitations remain material. Main-stage training, extra seeds and
+test/held-out/embedding-probe evaluation require separate review/approval.
+
 ## Recovery and reuse
 
 The user authorized an eight-node, up-to-twelve-hour *screen request* with
@@ -115,7 +141,10 @@ The owner requested three public repositories: A at
 distinct latest recovery state, training-seen vocabulary, aggregate reports
 and TensorBoard events. If best and latest are the same checkpoint, public
 `latest/` is omitted as requested; full private recovery remains in home
-storage. A best at step 0 must be labeled an untrained selection, not a
+storage. In the completed screen **all three best/latest pointers coincide**:
+their public repositories each contain best only; complete FP32 recovery
+snapshots and sampler/RNG state remain private. A best at step 0 in a future
+run must be labeled an untrained selection, not a
 learned improvement. Older blobs may remain in Git/LFS history. Public
 weights, vocabulary and any distinct optimizer/sampler state are public
 even though this explanatory card and raw corpus are private. No license
