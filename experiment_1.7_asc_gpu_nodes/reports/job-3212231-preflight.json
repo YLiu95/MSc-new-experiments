@@ -1,0 +1,12 @@
+{
+  "backup_seconds": 360.3891386301257,
+  "checkpoint_seconds": 60.90499763004482,
+  "parameters": 10193843857,
+  "passed": true,
+  "peak_reserved_gib_all_ranks": 35.189453125,
+  "resume_next_update_bitwise_equal": true,
+  "sampler_next_visit_equal": true,
+  "synthetic_loss": 0.8014839366078377,
+  "world": 64,
+  "worst_microbatch_seconds": 5.644775449996814
+}
