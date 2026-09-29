@@ -14,8 +14,10 @@ Use Python 3.11.5 in `$HOME/.venvs/experiment-1.6-gpu` and install
 `requirements.txt` using the PyTorch CUDA 12.4 extra index. `requirements.lock.txt`
 records the resolved installation. On this Jupyter account the home quota is 10 GiB,
 so the home environment path is a symlink to an owner-only scratch-backed venv.
-`env.sh` retains the shared Python/OpenSSL libraries while filtering conflicting
-CUDA/NCCL/NVHPC library directories. Do not source a dotenv file as shell code.
+`env.sh` explicitly restores the cluster's Python/OpenSSL/SQLite runtime
+libraries even in `--export=NONE` jobs while filtering conflicting
+CUDA/NCCL/NVHPC paths. `scripts/runtime_preflight.sh` checks that bootstrap.
+Do not source a dotenv file as shell code.
 
 ```bash
 cd '/net/people/tutorial/tutorial042/projects/multi-step_forecast_MSc_project/new experiment 1/new_experiment_1.6_asc_gpu_nodes'

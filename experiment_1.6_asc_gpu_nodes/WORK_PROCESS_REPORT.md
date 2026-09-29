@@ -51,6 +51,17 @@ queue-wait decision. No scheduler forecast below reserves a node.
   58 seconds. BF16 score errors were zero and the worst reported gradient
   absolute error was 0.002686, within the 0.02 tolerance. All resources
   were released. This was a gradient/padding diagnostic, not training.
+- First screen submission `3211032` started on eight nodes at 19:23:58 but
+  exited FAILED/2 immediately with **zero optimizer updates**: `sbatch
+  --export=NONE` removed `LD_LIBRARY_PATH` and the batch interpreter could
+  not load `libpython3.11.so.1.0`. The error is preserved in the job's Slurm
+  stderr. `env.sh` now restores the pinned Python, OpenSSL, SQLite, libffi
+  and zlib library directories without reintroducing inherited CUDA/NCCL
+  paths. A clean-environment rehearsal passed, and short detached preflight
+  job `3211034` completed 0:0 in three seconds with all required runtime
+  imports and empty stderr. The failed job ID remains in the submissions
+  ledger; a replacement eight-node screen requires a new verified source
+  commit and a new Slurm job ID.
 - The inherited home quota is 10 GiB. A failed installation was moved to
   private scratch, with a home-path symlink; the separate pinned environment
   then installed and passed `pip check`. The 1.5 environment was left alone.
