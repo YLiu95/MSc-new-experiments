@@ -76,3 +76,28 @@ def test_ranking_gradients_reach_shared_path_and_unknown_identity():
     scores, _, _ = model(inputs, identities, markets, tasks)
     pairwise_logistic(scores, labels, torch.ones_like(labels, dtype=torch.bool)).total.backward()
     assert model.horizon_embedding.weight.grad.abs().sum() > 0
+
+
+def test_tiny_repeated_basket_is_learnable_without_score_collapse():
+    torch.manual_seed(1337)
+    config = ModelConfig(tickers=6, width=32, heads=4, feedforward=64,
+                         temporal_blocks=1, cross_blocks=1, dropout=0,
+                         identity_dropout=0, activation_checkpointing=False)
+    model = RankingModel(config)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.005)
+    inputs = torch.randn(2, 3, 64)
+    tickers = torch.tensor([[0, 1, 2], [2, 3, 4]])
+    markets = torch.tensor([0, 0])
+    tasks = torch.tensor([[64, 7, 3], [64, 7, 3]])
+    labels = torch.tensor([[2., 1., 0.], [0., 2., 1.]])
+    observed = torch.ones_like(labels, dtype=torch.bool)
+    losses = []
+    for _ in range(35):
+        optimizer.zero_grad(set_to_none=True)
+        scores = model(inputs, tickers, markets, tasks)[0]
+        loss = pairwise_logistic(scores, labels, observed).total / len(inputs)
+        losses.append(float(loss.item()))
+        loss.backward()
+        optimizer.step()
+    assert losses[-1] < 0.8 * losses[0]
+    assert scores.detach().float().var(unbiased=False) > 0

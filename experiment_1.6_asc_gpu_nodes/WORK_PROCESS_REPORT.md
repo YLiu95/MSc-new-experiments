@@ -16,8 +16,11 @@ queue-wait decision. No scheduler forecast below reserves a node.
   3.4060786363283126 on 76,479,949 finite returns. New historical-streak
   indexes include 13 markets and 24,022 training-seen identities. The calendar
   union has no gaps of ten or more weekdays, but exchange-session calendars
-  have not been independently certified. Invalid prices were recorded and
-  masked, not forward-filled.
+  have not been independently certified. Twelve markets have no weekend
+  sessions; IN has three market-wide weekend dates (2019-10-27: 3,316 quotes;
+  2020-11-14: 3,401; 2025-02-01: 4,254), plausibly special sessions rather
+  than stray timestamps. Invalid prices were recorded and masked, not
+  forward-filled.
 - All 638,817 training tasks are historically feasible; issuing 320 scheduled
   samples (including catalogue setup) took 2.611 seconds on the CPU tunnel
   host. This is a sampler diagnostic, not a full data-loader throughput or
@@ -33,9 +36,21 @@ queue-wait decision. No scheduler forecast below reserves a node.
   if its own walltime expires sooner. A Jupyter restart does not extend either.
 - Slurm `sbatch --test-only` at 18:25:51 predicted immediate starts for 1, 2,
   and 3 nodes, each with eight A100s, 32 CPUs and 256 GiB RAM per node for
-  two hours. Forecasts are workload-dependent. No overnight training job ID
-  exists until the user selects nodes and maximum wait and the actual `sbatch`
-  submission succeeds.
+  two hours. Rechecked at 19:03:08: requests for 1, 2, 3, 4, 6 and 8 nodes
+  at two, eight and twelve hours all forecast immediate starts; extra nodes
+  rely on shared FLEX capacity and forecasts are not allocations. The user
+  then approved an eight-node, up-to-twelve-hour request with a 60-second
+  maximum wait and **manual stop/review after the screen**. The productive
+  2/3/3-node layout, budget amendment and release policy are in
+  [CAPACITY_AMENDMENT.md](CAPACITY_AMENDMENT.md). No overnight training job ID
+  exists until the revised multi-node checks and actual `sbatch` succeed.
+- Private TensorBoard 2.21 runs on 127.0.0.1:16007 on this Jupyter host;
+  HTTP 200 and the saved smoke run were verified. No public tunnel was opened.
+- Cross-node diagnostic `3211008` used all eight A100 nodes for three
+  independent A/B/C groups (DP=16/24/24); Slurm reported COMPLETED/0 in
+  58 seconds. BF16 score errors were zero and the worst reported gradient
+  absolute error was 0.002686, within the 0.02 tolerance. All resources
+  were released. This was a gradient/padding diagnostic, not training.
 - The inherited home quota is 10 GiB. A failed installation was moved to
   private scratch, with a home-path symlink; the separate pinned environment
   then installed and passed `pip check`. The 1.5 environment was left alone.
@@ -43,7 +58,10 @@ queue-wait decision. No scheduler forecast below reserves a node.
   `pip`, `setuptools`, `pyarrow`, `pytest`, and `python-dotenv`. The direct pins
   were amended to published fixed versions, the complete CPU suite passed,
   and a second scan reported **no known vulnerabilities**. The scanner ran
-  in a separate scratch-backed environment.
+  in a separate scratch-backed environment. TensorBoard 2.19 failed to start
+  with the security-fixed setuptools because it imported `pkg_resources`;
+  the pinned runtime was amended to 2.21, which has no such import. The
+  refreshed complete lock was rescanned: **no known vulnerabilities**.
 - GPU correctness check `3210831` (two A100s) matched a single-device BF16
   reference at both ranks with unequal informative counts and zero-weight
   padding; maximum measured score/gradient absolute error was 0 in this
@@ -86,8 +104,9 @@ an uninterrupted run. This is **not** a full-model GPU resume proof.
   a full-model resume after the revised binding. Complete-manifest validation
   and inference export passed the real GPU smoke, but the screen must show
   declining loss before scaling.
-3. Review updated Slurm forecasts; obtain the user's node count, maximum
-   allocation wait, and stage budget before detached training submission.
+3. Pass a real cross-node NCCL gradient/rendezvous check for the amended
+  2/3/3 layout and recheck the eight-node scheduler start immediately before
+  detached submission; abort within the chosen 60-second wait if not granted.
 4. Review matched A/B/C learning screens and complete private backup evidence
    before approving a full 30,000-update comparison or confirmatory seeds.
 5. After a selected trained model and rights review, verify the private source

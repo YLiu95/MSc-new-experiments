@@ -5,6 +5,8 @@ historically eligible tickers in a single aligned market basket for $L=64,72,\ld
 returns, $H=1,\ldots,\min(90,L-1)$ sessions, and $K=3,\ldots,128$ tickers.
 The historical decision record is in [EXPERIMENT_PLAN.md](EXPERIMENT_PLAN.md).
 The private [MODEL_CARD.md](MODEL_CARD.md) distinguishes measurements from proposed work.
+The approved 8-node resource change is recorded in
+[CAPACITY_AMENDMENT.md](CAPACITY_AMENDMENT.md).
 
 ## Private environment and prepared data
 
@@ -33,13 +35,17 @@ eligibility indexes, evaluation basket manifests, and sampler ledgers stay under
 
 ## Registered screen and Slurm lifetime
 
-The first GPU stage is **at most 2,000 completed updates per arm and 48 GPU-hours
-in aggregate**, whichever ceiling arrives first. It uses the prefix of the full
-30,000-update warmup/cosine schedule. A is fixed-task; B and C use matched variable
-sample streams, with the explicit conditioner bypassed in B. Production uses four
-historical-input-based samples per task visit, 320 real attempts per effective
-global batch, eight GPU data-parallel replicas per node, and four CPU data-loader
-workers per GPU. Extra nodes host independent arms, not tensor parallelism.
+The initial proposal was **at most 2,000 completed updates per arm and 48
+GPU-hours aggregate**. The user's dated amendment authorizes an eight-node,
+up-to-twelve-hour *request* (a 768 GPU-hour upper allocation ceiling) with A on
+two nodes and matched B/C on three nodes each. This screen still stops at 2,000
+updates per arm, releases all nodes after backup, and never automatically starts
+main training. It uses a prefix of the full 30,000-update warmup/cosine schedule.
+A is fixed-task; B/C share the same variable stream, with the conditioner
+bypassed in B. Production keeps four historical-input-based samples per task
+visit, 320 real attempts per effective global batch, eight replicas per node,
+and four CPU data-loader workers per GPU; TP=1. B/C pad their last microstep
+with 64 zero-weight execution samples that do not consume sample IDs.
 
 Forecasts allocate **nothing**:
 
@@ -53,6 +59,11 @@ submit explicitly, once:
 ```bash
 python -m ranker.launch submit --nodes N --max-wait-seconds SECONDS --hours 2
 ```
+
+For the approved amended screen, use `--nodes 8 --max-wait-seconds 60 --hours
+12` only after its cross-node diagnostic and final dry run pass. The launcher
+reduces walltime if 12 hours no longer fits before 08:00. A 12-hour request
+is not a promise to hold nodes idle after the screen completes.
 
 This submits with `sbatch` **without `--wait`**, records the numeric ID under
 `$ARTIFACT_ROOT/control/job-ID.json` and `submissions.jsonl`, and uses Slurm's
@@ -107,6 +118,9 @@ only the selected pair.
 For private TensorBoard, start `tensorboard --logdir "$ARTIFACT_ROOT/C/runs"
 --host 127.0.0.1 --port 16007` on the current authorized host and forward the
 port through VS Code. Do not publish a live tunnel or per-sample financial data.
+The current Jupyter host serves named A/B/C and smoke runs on loopback port
+**16007** (HTTP 200 verified); this service must be restarted after that
+Jupyter allocation ends.
 
 ## Remaining research gates
 

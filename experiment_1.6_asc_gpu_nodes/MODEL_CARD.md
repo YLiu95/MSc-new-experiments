@@ -6,8 +6,9 @@ file at a verified private GitHub commit. An unauthenticated reader may get 404.
 
 ## Status and intended use
 
-As of 2026-09-29, the research pipeline and pinned validation suites exist, but
-no GPU training result, held-out/task-transfer finding, test result, frozen
+As of 2026-09-29, the research pipeline and pinned validation suites exist,
+with a 21-update real-data GPU recovery smoke but no official A/B/C learning
+screen result, held-out/task-transfer finding, test result, frozen
 downstream probe, investment return, or profitability claim has been established.
 Weights must not be presented as a calibrated expected return or probability.
 Score ordering is a within-market preference for the specific $(L,H,K)$ and
@@ -79,6 +80,13 @@ report observed-outcome counts. No annualized Sharpe or portfolio claim is
 supported without delisting treatment, transaction costs, and nonoverlap work.
 
 ## Recovery and reuse
+
+The user authorized an eight-node, up-to-twelve-hour *screen request* with
+A on two nodes (DP=16) and B/C on three nodes each (DP=24). The screen ends
+after at most 2,000 updates per arm and does not continue into main training
+without the user's separate review. These resource settings amend the initial
+single-node proposal; they do not increase model capacity or change the
+320-real-sample global batch.
 
 Training schedules four distinct baskets per task visit, cycles feasible tasks
 with seed 1337 and keeps exact run-wide stratum counters in a transactional

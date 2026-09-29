@@ -12,6 +12,7 @@ import subprocess
 
 from .deadlines import slurm_time
 from .data import write_json
+from .publish import git_blob, github_files
 
 
 def reservation_end() -> datetime:
@@ -23,8 +24,10 @@ def reservation_end() -> datetime:
 
 def request(nodes: int, wait_seconds: int, hours: float, forecast: bool = False,
             now: datetime | None = None, end: datetime | None = None) -> list[str]:
-    if not 1 <= nodes <= 3 or wait_seconds < 0 or not 0 < hours <= 6 / nodes:
-        raise ValueError("Screen request is limited to 1-3 arms/nodes and 48 total GPU-hours")
+    limited_screen = nodes in (1, 2, 3) and 0 < hours <= 6 / nodes
+    amended_eight_node_screen = nodes == 8 and 0 < hours <= 12
+    if wait_seconds < 0 or not (limited_screen or amended_eight_node_screen):
+        raise ValueError("Screen request exceeds the registered or explicitly amended node/hour ceiling")
     now = now or datetime.now().astimezone()
     end = end or reservation_end()
     minutes_available = math.floor((end - now).total_seconds() / 60) - math.ceil(wait_seconds / 60) - 5
@@ -38,6 +41,7 @@ def request(nodes: int, wait_seconds: int, hours: float, forecast: bool = False,
             "--reservation=training", f"--nodes={nodes}", f"--ntasks={nodes}", "--ntasks-per-node=1",
             "--cpus-per-task=32", "--gpus-per-node=8", "--mem=256G", f"--time={minutes}",
             f"--deadline={deadline:%Y-%m-%dT%H:%M:%S}", "--signal=B:USR1@2400",
+            "--job-name=ranker-1.6-screen",
             f"--chdir={directory}", f"--output={root / 'control' / 'slurm-%j.out'}",
             f"--error={root / 'control' / 'slurm-%j.err'}",
             *(["--test-only"] if forecast else []), str(directory / "batch_entry.sh")]
@@ -51,11 +55,12 @@ def clean_environment() -> dict:
     return environment
 
 
-def forecast(hours: float) -> None:
+def forecast(hours: float, wait_seconds: int = 3600) -> None:
     checked_at = datetime.now().astimezone()
     end = reservation_end()
-    for nodes in (1, 2, 3):
-        command = request(nodes, 3600, min(hours, 6 / nodes), True, checked_at, end)
+    for nodes in (1, 2, 3, 8):
+        ceiling = 12 if nodes == 8 else 6 / nodes
+        command = request(nodes, wait_seconds, min(hours, ceiling), True, checked_at, end)
         result = subprocess.run(command, text=True, capture_output=True, env=clean_environment(), check=False)
         print(json.dumps({"checked_at": checked_at.isoformat(), "nodes": nodes, "gpus": nodes * 8,
                           "wall_minutes": next(option for option in command if option.startswith("--time=")),
@@ -66,6 +71,12 @@ def forecast(hours: float) -> None:
 def submit(nodes: int, wait_seconds: int, hours: float) -> str:
     command = request(nodes, wait_seconds, hours)
     root = Path("/net/tscratch/people") / pwd.getpwuid(os.getuid()).pw_name / "experiments" / "experiment_1.6"
+    source_report = json.loads((root / "control" / "github_source.json").read_text())
+    local_files = github_files(Path(__file__).resolve().parents[1], Path.home() / "experiment_1.6_plan.md")
+    if (source_report.get("repository") != "YLiu95/MSc-new-experiments" or not source_report.get("private")
+            or {name: git_blob(content) for name, content in local_files.items()}
+            != {name: entry["git_blob"] for name, entry in source_report["files"].items()}):
+        raise ValueError("Republish and verify the current private GitHub source before submitting training")
     control = root / "control"
     control.mkdir(parents=True, exist_ok=True, mode=0o700)
     result = subprocess.run(command, text=True, capture_output=True, env=clean_environment(), check=True)
@@ -74,7 +85,9 @@ def submit(nodes: int, wait_seconds: int, hours: float) -> str:
         raise ValueError(f"Submitted job but did not recognize Slurm ID: {result.stdout.strip()}")
     entry = {"job_id": job_id, "submitted_at": datetime.now().astimezone().isoformat(),
              "nodes": nodes, "gpus": 8 * nodes, "max_wait_seconds": wait_seconds,
-             "requested_hours": hours, "slurm_args": [value for value in command if value.startswith("--")]}
+             "requested_hours": hours, "screen_max_updates_per_arm": 2000,
+             "continues_to_main": False, "source_commit": source_report["commit"],
+             "slurm_args": [value for value in command if value.startswith("--")]}
     write_json(control / f"job-{job_id}.json", entry)
     with (control / "submissions.jsonl").open("a") as stream:
         stream.write(json.dumps(entry) + "\n")
@@ -90,7 +103,7 @@ def main() -> None:
     parser.add_argument("--hours", type=float, default=2)
     arguments = parser.parse_args()
     if arguments.action == "forecast":
-        forecast(arguments.hours)
+        forecast(arguments.hours, arguments.max_wait_seconds if arguments.max_wait_seconds is not None else 3600)
     elif arguments.nodes is None or arguments.max_wait_seconds is None:
         parser.error("Submission requires the user's node count and maximum wait time")
     else:
