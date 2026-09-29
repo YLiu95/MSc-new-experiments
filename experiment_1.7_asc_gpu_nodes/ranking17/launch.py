@@ -14,6 +14,7 @@ from torch._subclasses.fake_tensor import FakeTensorMode
 from ranker.checkpoints import digest
 from ranker.data import write_json
 from .model import ModelConfig, RankingModel, ParallelContext
+from .recovery import backup_root
 
 
 BASE = Path("/net/tscratch/people/tutorial042/experiments/experiment_1.7")
@@ -57,6 +58,7 @@ def freeze(root, nodes):
               "task_configurations": 638820, "reserved_training_tasks": [], "nonrepetition": True,
               "validation": "frozen 1.6 primary monitoring subset; no full-validation claim",
               "master_weights": "float32", "matrix_compute": "bfloat16",
+              "private_backup_root": str(backup_root()), "backup_independent_failure_domain": False,
               "shutdown_reserve_seconds": 1200}
     path = root / "config.json"
     if path.exists() and json.loads(path.read_text()) != config:

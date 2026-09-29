@@ -120,6 +120,10 @@ def run(arguments):
     model = RankingModel(model_config, context)
     if model.parameter_count() != config["parameters"] or model.parameter_count() <= 10_000_000_000:
         raise ValueError("Parameter-count gate failed")
+    if context.rank == 0:
+        print(json.dumps({"event": "model_initialized", "parameters": model.parameter_count(),
+                          "tp": context.tp_size, "dp": context.dp_size,
+                          "device": torch.cuda.get_device_name(context.device), "preflight": arguments.gate}), flush=True)
     optimizer = optimizer_for(model, context.device)
     wrapped = DistributedDataParallel(model, device_ids=[context.local_rank], process_group=context.dp_group,
                                       broadcast_buffers=False, gradient_as_bucket_view=True) if context.dp_size > 1 else model
@@ -149,14 +153,21 @@ def run(arguments):
         dist.all_reduce(peak, op=dist.ReduceOp.MAX)
         if peak.item() > torch.cuda.get_device_properties(context.device).total_memory * 0.90:
             raise RuntimeError("Worst-case reserved GPU memory exceeds 90 percent")
+        if context.rank == 0:
+            print(json.dumps({"event": "preflight_memory", "seconds": seconds,
+                              "peak_reserved_gib_all_ranks": peak.item() / 2**30}), flush=True)
         state["step"] = 1
         saved, checkpoint_seconds = save(gate_root, model, optimizer, state, sampler, config)
+        if context.rank == 0:
+            print(json.dumps({"event": "preflight_checkpoint", "seconds": checkpoint_seconds}), flush=True)
         copied = arguments.backup / "preflight" / saved.name
         backup_start = time.monotonic()
         if context.rank == 0:
             backup(saved, copied)
         dist.barrier()
         backup_seconds = time.monotonic() - backup_start
+        if context.rank == 0:
+            print(json.dumps({"event": "preflight_backup_verified", "seconds": backup_seconds}), flush=True)
         next_entries = sampler.issue(4) if context.rank == 0 else None
         update(model, wrapped, optimizer, [batch], 1)
         expected = tensor_digest(model, optimizer)
@@ -164,6 +175,10 @@ def run(arguments):
         update(model, wrapped, optimizer, [batch], 1)
         if tensor_digest(model, optimizer) != expected:
             raise RuntimeError("Resume-and-next-update is not bitwise equivalent")
+        peak = torch.tensor(torch.cuda.max_memory_reserved(), device=context.device)
+        dist.all_reduce(peak, op=dist.ReduceOp.MAX)
+        if peak.item() > torch.cuda.get_device_properties(context.device).total_memory * 0.90:
+            raise RuntimeError("Restored-update reserved GPU memory exceeds 90 percent")
         if context.rank == 0:
             restored_sampler = Sampler.restore(panels, copied / "sampler.sqlite", ledger.with_name(uuid.uuid4().hex + ".sqlite"), model_config.seed)
             if restored_sampler.issue(4) != next_entries:
@@ -176,6 +191,8 @@ def run(arguments):
                        "peak_reserved_gib_all_ranks": peak.item() / 2**30, "checkpoint_seconds": checkpoint_seconds,
                        "backup_seconds": backup_seconds, "resume_next_update_bitwise_equal": True,
                        "sampler_next_visit_equal": True, "synthetic_loss": report["loss"]})
+            print(json.dumps({"event": "preflight_passed", "resume_next_update_bitwise_equal": True,
+                              "sampler_next_visit_equal": True}), flush=True)
         dist.barrier()
     else:
         gate = json.loads((root / "reports" / "preflight.json").read_text())

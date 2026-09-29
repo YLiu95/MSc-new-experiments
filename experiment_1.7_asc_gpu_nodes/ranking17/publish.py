@@ -12,7 +12,7 @@ import requests
 
 from ranker.data import write_json
 from ranker.publish import credential, git_blob, git_blob_file
-from .recovery import backup, digest, verify
+from .recovery import backup, backup_root, digest, verify
 
 
 GITHUB = "YLiu95/MSc-new-experiments"
@@ -93,7 +93,7 @@ def pointer(root, name):
 
 
 def private_backup(root):
-    destination = Path.home() / "experiment_1.7_backups" / root.name
+    destination = backup_root() / root.name
     destination.mkdir(parents=True, exist_ok=True, mode=0o700)
     destination.chmod(0o700)
     selected = {}
@@ -107,7 +107,8 @@ def private_backup(root):
         for path in (root / "runs").glob("events.out.tfevents.*"):
             if digest(path) != digest(destination / "runs" / path.name):
                 raise ValueError("Private aggregate event backup mismatch")
-    report = {"checkpoints": selected, "verified": True, "verified_at": datetime.now().astimezone().isoformat()}
+    report = {"checkpoints": selected, "verified": True, "storage": "private shared-scratch second copy",
+              "independent_failure_domain": False, "verified_at": datetime.now().astimezone().isoformat()}
     write_json(root / "reports" / "private_backup.json", report)
     print(json.dumps(report), flush=True)
 

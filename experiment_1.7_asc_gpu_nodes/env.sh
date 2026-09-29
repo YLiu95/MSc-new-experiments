@@ -2,6 +2,7 @@
 set -euo pipefail
 export PATH="$HOME/.venvs/experiment-1.6-gpu/bin:$PATH"
 export ARTIFACT_ROOT="${ARTIFACT_ROOT:-/net/tscratch/people/$(id -un)/experiments/experiment_1.7}"
+export BACKUP_ROOT="${BACKUP_ROOT:-/net/tscratch/people/$(id -un)/experiments/experiment_1.7_backups}"
 export PYTHONPATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)${PYTHONPATH:+:$PYTHONPATH}"
 IFS=: read -r -a library_paths <<< "${LD_LIBRARY_PATH:-}"
 filtered_library_path=""

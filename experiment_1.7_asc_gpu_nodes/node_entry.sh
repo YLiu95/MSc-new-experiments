@@ -14,4 +14,4 @@ exec python -m torch.distributed.run \
     --max_restarts=0 --log-dir="$ARTIFACT_ROOT/logs/$1/node-$SLURM_PROCID" --redirects=3 --tee=0:3 \
     -m ranking17.train --root "$ARTIFACT_ROOT" \
     --panel /net/tscratch/people/tutorial042/experiments/experiment_1.6_masked/panel \
-    --backup "$HOME/experiment_1.7_backups/job-$SLURM_JOB_ID" "${@:2}"
+    --backup "$BACKUP_ROOT/job-$SLURM_JOB_ID" "${@:2}"

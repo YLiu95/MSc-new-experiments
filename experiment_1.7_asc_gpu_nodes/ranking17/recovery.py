@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import random
 import shutil
 import time
@@ -12,6 +13,14 @@ from safetensors.torch import save_file
 
 from ranker.checkpoints import digest
 from ranker.data import write_json
+
+
+def backup_root():
+    default = Path("/net/tscratch/people") / Path.home().name / "experiments" / "experiment_1.7_backups"
+    root = Path(os.environ.get("BACKUP_ROOT", str(default)))
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    root.chmod(0o700)
+    return root
 
 
 def rng_state(device):
@@ -107,10 +116,11 @@ def restore(directory, model, optimizer, config):
 def backup(directory, destination):
     manifest = verify(directory)
     if destination.exists():
-        verify(destination)
+        if verify(destination) != manifest:
+            raise ValueError("Existing backup differs from the source checkpoint")
         return
     stage = destination.with_name(destination.name + ".staging")
-    stage.mkdir(parents=True, exist_ok=False)
+    stage.mkdir(parents=True, exist_ok=False, mode=0o700)
     for name in list(manifest) + ["manifest.json"]:
         shutil.copy2(directory / name, stage / name)
     shutil.copy2(directory / "COMPLETE", stage / "COMPLETE")
