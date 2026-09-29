@@ -88,7 +88,7 @@ def save_checkpoint(root: Path, model: RankingModel, optimizer: torch.optim.Opti
             exported = load_file(stage / "weights.safetensors", device="cpu")
             if set(exported) != set(saved["model"]):
                 raise ValueError("Inference export has a missing parameter")
-            with torch.random.fork_rng():
+            with torch.random.fork_rng(devices=[]):
                 reference = RankingModel(ModelConfig(**config["model"])).eval()
                 inference = RankingModel(ModelConfig(**config["model"])).eval()
                 reference.load_state_dict(saved["model"])

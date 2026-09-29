@@ -44,6 +44,28 @@ queue-wait decision. No scheduler forecast below reserves a node.
   were amended to published fixed versions, the complete CPU suite passed,
   and a second scan reported **no known vulnerabilities**. The scanner ran
   in a separate scratch-backed environment.
+- GPU correctness check `3210831` (two A100s) matched a single-device BF16
+  reference at both ranks with unequal informative counts and zero-weight
+  padding; maximum measured score/gradient absolute error was 0 in this
+  small diagnostic. The allocation was released.
+- Worst-case synthetic profile `3210833` (eight A100s) ran 10 warmups and 50
+  measured effective 320-sample updates at L=512/H=90/K=128. Instantiated
+  parameters: 11,021,201. Mean measured step 2.94 seconds; checkpoint staging
+  and verified BF16 export took 6.31 seconds. All eight ranks reported peak
+  reserved memory 0.96094 GiB against the 34 GiB threshold, finite gradients
+  and nonzero score variance. This is synthetic data, not ranking evidence.
+- The first full-manifest real-data smoke `3210843` completed step 1 and wrote
+  complete step-0/step-1 checkpoints in 7m13s. A separate eight-A100 resume
+  reached step 21 and 6,720 scheduled attempts, all 320 informative at the
+  logged step 20 (loss 0.801416, gradient norm 0.983774, score variance
+  0.650020, 3.40 seconds per update). Best remained step 0 on the short
+  validation comparison; this is not skill evidence. A second private copy of
+  real best/latest/log artifacts was hash-verified: 41 files / 199,014,994 bytes.
+- The loader completed with four workers per GPU but warned that each rank
+  inherited one allowed CPU from Slurm's default task binding. Short job
+  `3210927` confirmed `srun --cpu-bind=none` exposes exactly the 32 allocated
+  CPUs. The detached batch script now uses this binding; its performance is
+  not yet measured in a production job.
 
 ## Correctness already checked
 
@@ -60,8 +82,10 @@ an uninterrupted run. This is **not** a full-model GPU resume proof.
 ## Open gates
 
 1. Confirm each exchange calendar and public derivative/identity rights.
-2. Run BF16 DDP/memory/50-update GPU profiles (all eight devices), benchmark
-   four workers per GPU, real-data continuation, and complete-manifest export.
+2. Confirm bound-CPU throughput during a production-shaped screen and test
+  a full-model resume after the revised binding. Complete-manifest validation
+  and inference export passed the real GPU smoke, but the screen must show
+  declining loss before scaling.
 3. Review updated Slurm forecasts; obtain the user's node count, maximum
    allocation wait, and stage budget before detached training submission.
 4. Review matched A/B/C learning screens and complete private backup evidence
@@ -71,6 +95,7 @@ an uninterrupted run. This is **not** a full-model GPU resume proof.
    to the requested public HF repo. Complete frozen probes/test/bootstrap after
    selection, not as a basis for choosing the checkpoint.
 
-This report should be extended with actual Slurm job IDs, GPU-hours, durations,
+This report should be extended with official Slurm job IDs, GPU-hours, durations,
 peak memory per GPU, recovery tolerances, validation and remote digest evidence
-as execution progresses. No checkpoint or public model has been claimed yet.
+as execution progresses. Smoke checkpoints exist privately; no official
+training run or public model has been claimed yet.

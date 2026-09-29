@@ -11,7 +11,8 @@ if [[ "${#limits[@]}" -ne 2 ]]; then
     exit 2
 fi
 set +e
-srun --nodes="$SLURM_JOB_NUM_NODES" --ntasks="$SLURM_JOB_NUM_NODES" --ntasks-per-node=1 \
+srun --cpu-bind=none --cpus-per-task=32 --nodes="$SLURM_JOB_NUM_NODES" \
+    --ntasks="$SLURM_JOB_NUM_NODES" --ntasks-per-node=1 \
     bash "$SLURM_SUBMIT_DIR/node_entry.sh" "${limits[0]}" "${limits[1]}" "$stop_file"
 status=$?
 set -e

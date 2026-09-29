@@ -10,7 +10,7 @@ from pathlib import Path
 import stat
 
 from dotenv import load_dotenv
-from huggingface_hub import CommitOperationAdd, HfApi
+from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi
 import requests
 
 from .checkpoints import digest, pointer
@@ -75,11 +75,15 @@ def github_commit(source: Path, plan: Path, root: Path) -> dict:
     if not repository["private"] or not repository.get("permissions", {}).get("push"):
         raise ValueError("Expected a writable private source repository")
     branch = repository["default_branch"]
-    if repository["size"] == 0:
+    try:
+        head = api("GET", f"/git/ref/heads/{branch}")["object"]["sha"]
+    except requests.HTTPError as error:
+        if error.response.status_code not in (404, 409) or repository.get("size") != 0:
+            raise
         first = f"{GITHUB_FOLDER}/README.md"
         api("PUT", f"/contents/{first}", json={"message": "Initialize private Experiment 1.6 source",
                                                "content": base64.b64encode(files[first]).decode(), "branch": branch})
-    head = api("GET", f"/git/ref/heads/{branch}")["object"]["sha"]
+        head = api("GET", f"/git/ref/heads/{branch}")["object"]["sha"]
     previous_tree = api("GET", f"/git/commits/{head}")["tree"]["sha"]
     old_tree = api("GET", f"/git/trees/{previous_tree}?recursive=1")
     if old_tree.get("truncated"):
@@ -134,9 +138,7 @@ def model_files(root: Path, arm: str, source_report: dict) -> dict[str, Path]:
     if not 0 < best_state["step"] <= latest_state["step"]:
         raise ValueError("Best/latest must contain completed optimizer updates")
     paths = {f"best/{name}": best / name for name in ("weights.safetensors", "config.json", "state.json")}
-    paths.update({f"latest/{name}": latest / name for name in ("recovery.pt", "sampler.sqlite", "config.json", "state.json")})
-    for rng in sorted(latest.glob("rng-*.pt")):
-        paths[f"latest/{rng.name}"] = rng
+    paths.update({f"latest/{path.name}": path for path in latest.iterdir() if path.is_file()})
     if len(list(latest.glob("rng-*.pt"))) != latest_state["world"]:
         raise ValueError("Latest recovery is missing per-rank RNG states")
     paths["vocabulary.json"] = root / "panel" / "vocabulary.json"
@@ -149,6 +151,10 @@ def model_files(root: Path, arm: str, source_report: dict) -> dict[str, Path]:
         raise ValueError("Selected arm has no aggregate TensorBoard events")
     publication = root / "publication"
     publication.mkdir(parents=True, exist_ok=True, mode=0o700)
+    write_json(publication / "inference_manifest.json", {
+        name: {"bytes": paths[f"best/{name}"].stat().st_size, "sha256": digest(paths[f"best/{name}"])}
+        for name in ("weights.safetensors", "config.json", "state.json")})
+    paths["best/inference_manifest.json"] = publication / "inference_manifest.json"
     card = (f"https://github.com/{GITHUB_REPO}/blob/{source_report['commit']}/"
             f"{GITHUB_FOLDER}/MODEL_CARD.md")
     (publication / "README.md").write_text(f"[Private model card]({card})\n")
@@ -181,6 +187,12 @@ def publish_model(root: Path, arm: str) -> dict:
     if api.model_info(HF_REPO).private:
         raise ValueError("Requested model destination is not public")
     operations = [CommitOperationAdd(path_in_repo=name, path_or_fileobj=str(path)) for name, path in paths.items()]
+    previous = root / "reports" / "public_backup_verification.json"
+    if previous.is_file():
+        old = json.loads(previous.read_text())
+        if old.get("repository") == HF_REPO:
+            operations.extend(CommitOperationDelete(path_in_repo=name)
+                              for name in old["verified_files"] if name not in paths)
     commit = api.create_commit(repo_id=HF_REPO, repo_type="model", operations=operations,
                                commit_message=f"Publish selected {arm} best/latest and aggregate logs", num_threads=8)
     remote = {entry.rfilename: entry for entry in api.model_info(HF_REPO, revision=commit.oid,
