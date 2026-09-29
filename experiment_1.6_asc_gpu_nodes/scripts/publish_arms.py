@@ -61,6 +61,8 @@ def files_for_arm(root: Path, arm: str, source: dict) -> tuple[dict[str, Path], 
     for name in ("baselines.json", "evaluation_registry.json"):
         paths[f"reports/{name}"] = root / "reports" / name
     paths["reports/training_summary.json"] = selected / "reports" / "training_summary.json"
+    paths["reports/validation.jsonl"] = selected / "validation.jsonl"
+    paths["reports/history.jsonl"] = selected / "history.jsonl"
     for path in sorted((selected / "runs").rglob("events.out.tfevents.*")):
         paths[f"runs/{path.relative_to(selected / 'runs').as_posix()}"] = path
     if not any(name.startswith("runs/") for name in paths):
