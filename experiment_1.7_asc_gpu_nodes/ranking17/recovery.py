@@ -107,6 +107,8 @@ def restore(directory, model, optimizer, config):
         raise ValueError("Exact resume requires the original parallel layout")
     recovery = torch.load(directory / names[0], map_location="cpu", weights_only=True)
     model.load_state_dict(recovery["model"])
+    optimizer.state.clear()
+    torch.cuda.empty_cache()
     optimizer.load_state_dict(recovery["optimizer"])
     del recovery
     restore_rng(torch.load(directory / names[1], map_location="cpu", weights_only=True), context.device)

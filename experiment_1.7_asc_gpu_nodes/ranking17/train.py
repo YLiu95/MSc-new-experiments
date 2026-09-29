@@ -178,7 +178,7 @@ def run(arguments):
         peak = torch.tensor(torch.cuda.max_memory_reserved(), device=context.device)
         dist.all_reduce(peak, op=dist.ReduceOp.MAX)
         if peak.item() > torch.cuda.get_device_properties(context.device).total_memory * 0.90:
-            raise RuntimeError("Restored-update reserved GPU memory exceeds 90 percent")
+            raise RuntimeError(f"Restored-update reserved GPU memory exceeds 90 percent: {peak.item() / 2**30:.2f} GiB")
         if context.rank == 0:
             restored_sampler = Sampler.restore(panels, copied / "sampler.sqlite", ledger.with_name(uuid.uuid4().hex + ".sqlite"), model_config.seed)
             if restored_sampler.issue(4) != next_entries:
