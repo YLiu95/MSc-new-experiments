@@ -80,7 +80,9 @@ def deadline(root):
     print(stop, flush=True)
 
 
-def submit():
+def submit(nodes=None):
+    if nodes is not None and not 2 <= nodes <= 8:
+        raise ValueError("Experiment 1.7 requires 2-8 nodes")
     BASE.mkdir(parents=True, exist_ok=True, mode=0o700)
     BASE.chmod(0o700)
     control = BASE / "control"
@@ -97,7 +99,7 @@ def submit():
     for name in ("SLURM_MEM_PER_CPU", "SLURM_MEM_PER_GPU", "SLURM_MEM_PER_NODE", "SALLOC_USE_MIN_NODES"):
         environment.pop(name, None)
     command = ["sbatch", "--parsable", "--export=NONE", f"--deadline={selected['EndTime']}", "--partition=tutorial",
-               "--account=tutorial", f"--reservation={selected['ReservationName']}", "--nodes=2-8",
+               "--account=tutorial", f"--reservation={selected['ReservationName']}", f"--nodes={nodes if nodes is not None else '2-8'}",
                "--ntasks-per-node=1", "--cpus-per-task=32", "--gpus-per-node=8", "--mem=256G",
                f"--time={minutes}", "--signal=B:USR1@1200", "--job-name=experiment-1.7",
                f"--chdir={SOURCE}", f"--output={control}/job-%j.out", f"--error={control}/job-%j.err",
@@ -118,9 +120,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=("submit", "freeze", "deadline"))
     parser.add_argument("--root", type=Path)
+    parser.add_argument("--nodes", type=int)
     arguments = parser.parse_args()
     if arguments.action == "submit":
-        submit()
+        submit(arguments.nodes)
     elif arguments.action == "freeze":
         print(json.dumps(freeze(arguments.root, int(os.environ["SLURM_JOB_NUM_NODES"]))))
     else:

@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
-export PATH="$HOME/.venvs/experiment-1.6-gpu/bin:$PATH"
+python_env="${EXPERIMENT_PYTHON_ENV:-/net/tscratch/people/$(id -un)/experiments/experiment_1.7_venv}"
+if [[ ! -x "$python_env/bin/python" ]]; then
+    printf 'Missing Experiment 1.7 Python environment\n' >&2
+    exit 1
+fi
+export PATH="$python_env/bin:$PATH"
 export ARTIFACT_ROOT="${ARTIFACT_ROOT:-/net/tscratch/people/$(id -un)/experiments/experiment_1.7}"
 export BACKUP_ROOT="${BACKUP_ROOT:-/net/tscratch/people/$(id -un)/experiments/experiment_1.7_backups}"
 export PYTHONPATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)${PYTHONPATH:+:$PYTHONPATH}"

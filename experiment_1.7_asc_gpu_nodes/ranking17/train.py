@@ -24,6 +24,7 @@ from ranker.losses import pairwise_logistic
 from ranker.sampler import Sampler
 from ranker.train import informative_count, learning_rate, optimizer_for
 from .model import ModelConfig, RankingModel
+from .publish import best as publish_best
 from .recovery import backup, digest, restore, save, tensor_digest
 
 
@@ -209,7 +210,6 @@ def run(arguments):
                     stream.write(json.dumps({"from": str(arguments.resume), "time": time.time(), "step": state["step"]}) + "\n")
         next_save = time.monotonic() + 1800
         last_saved = state["step"] if arguments.resume else -1
-        last_validation = time.monotonic()
         worst_update = gate["worst_microbatch_seconds"] * math.ceil(320 / context.dp_size) * 1.5
         while True:
             stopping = torch.tensor(int(STOP or (root / "control" / "STOP").exists()
@@ -248,7 +248,7 @@ def run(arguments):
                 writer.flush()
                 print(json.dumps({"event": "update", **record}), flush=True)
             validation_bound = gate["worst_microbatch_seconds"] * len(registry["monitor_line_indices"]) / context.dp_size + 120
-            validate_now = (state["step"] == 1 or time.monotonic() - last_validation >= 1800) and time.time() + validation_bound < arguments.stop_at
+            validate_now = (state["step"] == 1 or state["step"] % 5 == 0) and time.time() + validation_bound < arguments.stop_at
             if validate_now:
                 summary = validate(model, panels, panel, registry)
                 improved = state["best_metric"] is None or summary["macro_spearman"] > state["best_metric"]
@@ -263,9 +263,18 @@ def run(arguments):
                 saved, duration = save(root, model, optimizer, state, sampler, config, best=improved)
                 last_saved = state["step"]
                 next_save = time.monotonic() + 1800
-                last_validation = time.monotonic()
                 if context.rank == 0:
                     writer.add_scalar("system/checkpoint_seconds", duration, state["step"])
+                if improved:
+                    failure = [None]
+                    if context.rank == 0:
+                        try:
+                            publish_best(root)
+                        except Exception as error:
+                            failure[0] = str(error)
+                    dist.broadcast_object_list(failure, src=0)
+                    if failure[0]:
+                        raise RuntimeError(f"Best checkpoint publication failed: {failure[0]}")
             elif time.monotonic() >= next_save:
                 saved, duration = save(root, model, optimizer, state, sampler, config)
                 last_saved = state["step"]

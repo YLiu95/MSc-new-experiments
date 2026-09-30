@@ -35,7 +35,7 @@ def source(root):
     for name in ("README.md", "MODEL_CARD.md", "WORK_PROCESS_REPORT.md", "env.sh", "node_entry.sh",
                  "batch_entry.sh", "requirements.txt", "requirements.lock.txt"):
         files[f"{FOLDER}/{name}"] = (SOURCE / name).read_bytes()
-    files[f"{FOLDER}/EXPERIMENT_PLAN.md"] = (Path.home() / "Experiment 1.7 plan.md").read_bytes()
+    files[f"{FOLDER}/EXPERIMENT_PLAN.md"] = (SOURCE / "EXPERIMENT_PLAN.md").read_bytes()
     files[f"{FOLDER}/configs/{root.name}.json"] = (root / "config.json").read_bytes()
     for name in ("preflight.json", "private_backup.json", "public_backup.json"):
         path = root / "reports" / name
@@ -90,6 +90,37 @@ def pointer(root, name):
     location.relative_to((root / "checkpoints").resolve())
     verify(location)
     return location
+
+
+def best(root):
+    checkpoint = pointer(root, "best")
+    step = json.loads((checkpoint / "state.json").read_text())["step"]
+    if step <= 0:
+        raise ValueError("No trained best checkpoint")
+    paths = {f"best/{path.name}": path for path in checkpoint.glob("weights-*.safetensors")}
+    if len(paths) != 8:
+        raise ValueError("Expected eight inference weight shards")
+    paths.update({f"best/{name}": checkpoint / name for name in ("config.json", "state.json")})
+    paths["README.md"] = SOURCE / "MODEL_CARD.md"
+    api = HfApi(token=credential("HF_TOKEN"))
+    if api.whoami()["name"] != "YL95":
+        raise ValueError("Wrong HF account")
+    api.create_repo(HF, repo_type="model", private=False, exist_ok=True)
+    if api.model_info(HF).private:
+        raise ValueError("Expected public inference destination")
+    commit = api.create_commit(HF, operations=[CommitOperationAdd(path_in_repo=name, path_or_fileobj=str(path))
+                                              for name, path in paths.items()],
+                               commit_message=f"Experiment 1.7 best inference checkpoint step {step}", num_threads=8)
+    remote = {entry.rfilename: entry for entry in api.model_info(HF, revision=commit.oid, files_metadata=True).siblings}
+    for name, path in paths.items():
+        entry = remote[name]
+        expected = digest(path) if entry.lfs is not None else git_blob_file(path)
+        actual = entry.lfs.sha256 if entry.lfs is not None else entry.blob_id
+        if entry.size != path.stat().st_size or actual != expected:
+            raise ValueError(f"HF best checkpoint size/digest mismatch: {name}")
+    write_json(root / "reports" / "best_publication.json", {"repository": HF, "commit": commit.oid,
+               "step": step, "checkpoint": checkpoint.name, "verified_at": datetime.now().astimezone().isoformat()})
+    print(json.dumps({"repository": HF, "commit": commit.oid, "best_step": step}), flush=True)
 
 
 def private_backup(root):
