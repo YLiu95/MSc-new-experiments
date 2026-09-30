@@ -2,6 +2,7 @@ import argparse
 from collections import defaultdict
 from contextlib import nullcontext
 from dataclasses import asdict
+import gc
 import json
 import math
 import os
@@ -288,6 +289,9 @@ def run(arguments):
     if context.rank == 0:
         sampler.close()
         writer.close()
+    del wrapped, optimizer, model
+    gc.collect()
+    torch.cuda.empty_cache()
     context.close()
 
 
