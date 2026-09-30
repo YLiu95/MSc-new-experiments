@@ -1,0 +1,16 @@
+{
+  "checkpoints": {
+    "best": {
+      "checkpoint": "step_00000095_000000030400",
+      "manifest_sha256": "d50fc2b1f3a1efac7453822e8c176642f4149998d49eca2320ed53084a6ce93b"
+    },
+    "latest": {
+      "checkpoint": "step_00000153_000000048960",
+      "manifest_sha256": "43ed802ae8e6109a3eab5da1112d557c2c0e204b01255e028c44cc20033d87d6"
+    }
+  },
+  "independent_failure_domain": false,
+  "storage": "private shared-scratch second copy",
+  "verified": true,
+  "verified_at": "2026-09-30T15:42:49.029746+02:00"
+}

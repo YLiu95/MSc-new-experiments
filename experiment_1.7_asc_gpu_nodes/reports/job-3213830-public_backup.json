@@ -1,0 +1,121 @@
+{
+  "best_equals_latest": false,
+  "commit": "ecf683c5cfd3f49c9fbf2ce5e53f2f637dfce9b9",
+  "files": {
+    "README.md": {
+      "bytes": 2054,
+      "digest": "20b67f7f5525efd5c772d22fb028ed245ee45c3b"
+    },
+    "best/config.json": {
+      "bytes": 1257,
+      "digest": "29329b73c789973d06c996035b28c547385088fb"
+    },
+    "best/state.json": {
+      "bytes": 91,
+      "digest": "c5a6b3834875672f49998773e12efaae2b8ea098"
+    },
+    "best/weights-00.safetensors": {
+      "bytes": 2552571948,
+      "digest": "70c42ad5ed2f428403e95789d8d0eb38799a8cc9fbaeabe2e63445cb2cebbb18"
+    },
+    "best/weights-01.safetensors": {
+      "bytes": 2552571948,
+      "digest": "7f753f503b1d6d63f85a9e7eb66c96be9772cb54967c71efd1aac470943a23f1"
+    },
+    "best/weights-02.safetensors": {
+      "bytes": 2552571948,
+      "digest": "191fd246a752460a35b9bf74a7a3443c7525ca75ceba331e09f8c650568844a1"
+    },
+    "best/weights-03.safetensors": {
+      "bytes": 2552571948,
+      "digest": "762ac400737402aa8ec793906d12f0747ce6816396c1bc41cb400e1bdc3760bb"
+    },
+    "best/weights-04.safetensors": {
+      "bytes": 2552571948,
+      "digest": "ddc0129a6b80fa3000837786c30a20422c49c3fba97e2a561fb3b978a0df89d1"
+    },
+    "best/weights-05.safetensors": {
+      "bytes": 2552571948,
+      "digest": "f83d3b334cac1a32e31655db181f9029bc515a6c03fc6732cf756fe47f95cf33"
+    },
+    "best/weights-06.safetensors": {
+      "bytes": 2552571948,
+      "digest": "44209a1c860a1216b87d708c8a2781cab2c6f78d81573c08fabec3c6a33ec933"
+    },
+    "best/weights-07.safetensors": {
+      "bytes": 2552571948,
+      "digest": "06cc42f30505e9c4edfdece628a6e0431fe0b7529af84624c9601704b82bda7d"
+    },
+    "latest/config.json": {
+      "bytes": 1257,
+      "digest": "29329b73c789973d06c996035b28c547385088fb"
+    },
+    "latest/state.json": {
+      "bytes": 92,
+      "digest": "0cc9845af7dee66563dee4fc9bd6820353fdd244"
+    },
+    "latest/weights-00.safetensors": {
+      "bytes": 2552571948,
+      "digest": "a648adbd1d0464f9476c431e426edbb067b80bd959937bfb1de66ca8a0e406eb"
+    },
+    "latest/weights-01.safetensors": {
+      "bytes": 2552571948,
+      "digest": "62a9a29310e034020ae269b8e17538259147efb2048d1fbbeebae20b2a5a190f"
+    },
+    "latest/weights-02.safetensors": {
+      "bytes": 2552571948,
+      "digest": "7bf5befd6c3d2b5f1de01cb1aca56ceadec3dc28966a9c4fdde2a4f7f7a78133"
+    },
+    "latest/weights-03.safetensors": {
+      "bytes": 2552571948,
+      "digest": "079404b27fa966437fd606580b86cfe491a8479e35d187af16064548cd46adce"
+    },
+    "latest/weights-04.safetensors": {
+      "bytes": 2552571948,
+      "digest": "225c53a9fa4ec31f30938967e1bfd80f96ea883bf63e9eab5919dcc07b1a11a1"
+    },
+    "latest/weights-05.safetensors": {
+      "bytes": 2552571948,
+      "digest": "a7aebb466396290c3550a479989d8ac972c084be7edb39647ca728449072af7f"
+    },
+    "latest/weights-06.safetensors": {
+      "bytes": 2552571948,
+      "digest": "cce958b6804cac59321c1afb69bf4beb9d7721c2376b7b1bb125736233638c69"
+    },
+    "latest/weights-07.safetensors": {
+      "bytes": 2552571948,
+      "digest": "6ef5a13d52491364ef14e819e9ed27f61ef075fa6a8db6dd038b35ab23a7a7e1"
+    },
+    "reports/history.jsonl": {
+      "bytes": 51944,
+      "digest": "dbf465e5646af447ba817b1f005d5eeee7db2f5f"
+    },
+    "reports/preflight.json": {
+      "bytes": 362,
+      "digest": "ba91e6b91d0c60294c155e4da15c9f30a2717d5c"
+    },
+    "reports/private_backup.json": {
+      "bytes": 517,
+      "digest": "330c77ae5b8369866a42d46a38af66d3f06de559"
+    },
+    "reports/training.json": {
+      "bytes": 155,
+      "digest": "ab00e7956ed75f9747033cb0316c7dc3cebb6c8f"
+    },
+    "reports/validation.jsonl": {
+      "bytes": 107214,
+      "digest": "903af84c476fcef3cb2e0b3cf11210c17aeba54e"
+    },
+    "runs/events.out.tfevents.1790762823.t0011.3290672.0": {
+      "bytes": 88,
+      "digest": "a102589101d240bc4ad2e6ae4cf04e4903d337b23d4342808522bc8b872dd40b"
+    },
+    "runs/events.out.tfevents.1790763380.t0011.3291411.0": {
+      "bytes": 206213,
+      "digest": "9e557ec43acda40af5cc90e6ed17e2ff33fe2c4330acebe5b7c8b79beaf77767"
+    }
+  },
+  "private": false,
+  "repository": "YL95/experiment-1.7-asc-gpu-nodes",
+  "verified_at": "2026-09-30T15:50:57.884219+02:00"
+}
