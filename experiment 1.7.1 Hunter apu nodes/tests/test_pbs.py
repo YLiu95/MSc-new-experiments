@@ -3,6 +3,7 @@ import json
 import unittest
 
 from ranker.data import write_json
+from ranking17.recovery import backup, digest
 
 from ranking17.pbs import (
     PRODUCTION_END, free_apu_nodes, production_nodes, running_deadlines,
@@ -104,6 +105,52 @@ def test_migration_submission_uses_isolated_source_and_records_waiver(tmp_path, 
     assert "select=6:node_type=mi300a:mpiprocs=1" in command
     assert f"HUNTER_SOURCE={tmp_path / 'source-six'}" in command[command.index("-v") + 1]
     assert f"HUNTER_MIGRATE_FROM={checkpoint.resolve()}" in command[command.index("-v") + 1]
+
+
+def test_handoff_verifies_before_releasing_only_redundant_backup(tmp_path, monkeypatch):
+    monkeypatch.setenv("HUNTER_WORKSPACE", str(tmp_path))
+    monkeypatch.setenv("BACKUP_ROOT", str(tmp_path / "backups"))
+    launch = importlib.import_module("ranking17.launch")
+    monkeypatch.setattr(launch, "BASE", tmp_path / "artifacts")
+    monkeypatch.setattr(launch.time, "time", lambda: PRODUCTION_END - 7200)
+    control = launch.BASE / "control"
+    control.mkdir(parents=True)
+    write_json(control / "two-node-preflight.json", {"passed": True, "world": 8, "source_sha256": "parent"})
+    root = launch.BASE / "job-285983.hunter-pbs01"
+    (root / "control").mkdir(parents=True)
+    (root / "control" / "STOP").touch()
+    checkpoint = root / "checkpoints" / "step_192"
+    checkpoint.mkdir(parents=True)
+    for name in ("config.json", "state.json"):
+        write_json(checkpoint / name, {"step": 192})
+    (checkpoint / "recovery.pt").write_bytes(b"preserve original training state")
+    write_json(checkpoint / "manifest.json", {path.name: {"bytes": path.stat().st_size, "sha256": digest(path)}
+                                               for path in checkpoint.iterdir()})
+    (checkpoint / "COMPLETE").write_text(digest(checkpoint / "manifest.json") + "\n")
+    write_json(root / "latest.json", {"directory": checkpoint.relative_to(root).as_posix()})
+    copied = tmp_path / "backups" / root.name / checkpoint.name
+    backup(checkpoint, copied)
+    monkeypatch.setattr(launch, "freeze", lambda *args: {"migration": {"parent_source_sha256": "parent"}})
+    monkeypatch.setattr(launch, "quota_available", lambda path: 100 * 1024**3)
+
+    def check_output(command, **kwargs):
+        if command[0] == "qstat":
+            return json.dumps({"Jobs": {"parent": {"job_state": "F", "Exit_status": 0}}})
+        return json.dumps({"nodes": {str(index): {"state": "free", "resources_available": {"node_type": "mi300a"}}
+                                    for index in range(6)}})
+
+    called = []
+
+    def submit(nodes, mode, migrate_from, waive):
+        assert checkpoint.exists() and not copied.exists()
+        called.append((nodes, mode, migrate_from, waive))
+
+    monkeypatch.setattr(launch.subprocess, "check_output", check_output)
+    monkeypatch.setattr(launch, "submit", submit)
+    launch.handoff(root, 6, True)
+    assert called == [(6, "production", checkpoint.resolve(), True)]
+    assert (root / "reports" / "retired-redundant-backup" / "manifest.json").is_file()
+    assert (control / "six-node-handoff.json").is_file()
 
 
 if __name__ == "__main__":

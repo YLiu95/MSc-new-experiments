@@ -6,6 +6,7 @@ import json
 import math
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import threading
@@ -16,6 +17,7 @@ from torch._subclasses.fake_tensor import FakeTensorMode
 from ranker.checkpoints import digest
 from ranker.data import write_json
 from .model import ModelConfig, RankingModel, ParallelContext
+from .offline import quota_available
 from .recovery import backup_root, validate_migration_config, verify
 from .pbs import (PRODUCTION_END, QUEUE_WAIT_SECONDS, free_apu_nodes, production_nodes,
                   running_deadlines, validate_nodes, walltime)
@@ -161,6 +163,57 @@ def submit(nodes=None, mode="preflight", migrate_from=None, waive_fraction=False
     print(json.dumps(report), flush=True)
 
 
+def handoff(root, nodes, waive_fraction=False):
+    if nodes != 6 or root.resolve() != (BASE / "job-285983.hunter-pbs01").resolve():
+        raise ValueError("Handoff is restricted to the approved two-to-six-node transition")
+    if not (root / "control" / "STOP").is_file():
+        raise ValueError("Request a graceful source-job stop before handoff")
+    control = BASE / "control"
+    lock = control / "six-node-handoff.lock"
+    lock.mkdir()
+    wake = threading.Event()
+    limit = min(time.time() + 1200, PRODUCTION_END - 3600)
+    parent_id = root.name.removeprefix("job-")
+    while True:
+        job = next(iter(json.loads(subprocess.check_output(
+            ["qstat", "-x", "-f", "-F", "json", parent_id], text=True))["Jobs"].values()))
+        print(json.dumps({"event": "handoff_wait", "parent_job": parent_id, "state": job["job_state"]}), flush=True)
+        if job["job_state"] == "F":
+            if job.get("Exit_status") != 0:
+                raise ValueError("Source job did not finish successfully")
+            break
+        if time.time() >= limit:
+            raise ValueError("Source shutdown did not finish within the handoff budget")
+        wake.wait(15)
+    checkpoint = (root / json.loads((root / "latest.json").read_text())["directory"]).resolve()
+    checkpoint.relative_to((root / "checkpoints").resolve())
+    ready = freeze(control / f"ready-handoff-{time.time_ns()}", nodes, checkpoint)
+    gate = json.loads((control / "two-node-preflight.json").read_text())
+    if not gate["passed"] or gate["world"] != 8 or gate["source_sha256"] != ready["migration"]["parent_source_sha256"]:
+        raise ValueError("Source checkpoint must match the verified two-node gate")
+    free = free_apu_nodes(json.loads(subprocess.check_output(["pbsnodes", "-a", "-F", "json"], text=True)))
+    production_nodes(free, requested=nodes, waive_fraction=waive_fraction)
+    copied = backup_root() / root.name / checkpoint.name
+    print(json.dumps({"event": "handoff_verify", "checkpoint": checkpoint.name}), flush=True)
+    manifest = verify(checkpoint, workers=4)
+    if verify(copied, workers=4) != manifest:
+        raise ValueError("The final backup differs from the source checkpoint")
+    payload_bytes = sum(entry["bytes"] for entry in manifest.values())
+    if quota_available(root) + payload_bytes < 2 * payload_bytes + 20 * 1024**3:
+        raise ValueError("Insufficient quota for the full six-node gate while retaining the parent")
+    evidence = root / "reports" / "retired-redundant-backup"
+    evidence.mkdir(parents=True, exist_ok=True)
+    for name in ("config.json", "state.json", "manifest.json", "COMPLETE"):
+        shutil.copy2(copied / name, evidence / name)
+    receipt = {"parent_job": parent_id, "checkpoint": str(checkpoint), "verified": True,
+               "manifest_sha256": digest(checkpoint / "manifest.json"), "backup_removed": str(copied),
+               "freed_payload_bytes": payload_bytes, "free_node_fraction_waived": waive_fraction}
+    shutil.rmtree(copied)
+    write_json(control / "six-node-handoff.json", receipt)
+    print(json.dumps({"event": "handoff_source_preserved", **receipt}), flush=True)
+    submit(nodes, "production", checkpoint, waive_fraction)
+
+
 def watch(job_id, submitted):
     wake = threading.Event()
     while True:
@@ -184,7 +237,7 @@ def watch(job_id, submitted):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("submit", "freeze", "deadline", "watch"))
+    parser.add_argument("action", choices=("submit", "freeze", "deadline", "watch", "handoff"))
     parser.add_argument("--root", type=Path)
     parser.add_argument("--nodes", type=int)
     parser.add_argument("--mode", choices=("preflight", "production"), default="preflight")
@@ -195,6 +248,8 @@ if __name__ == "__main__":
     arguments = parser.parse_args()
     if arguments.action == "submit":
         submit(arguments.nodes, arguments.mode, arguments.migrate_from, arguments.waive_free_node_fraction)
+    elif arguments.action == "handoff":
+        handoff(arguments.root, arguments.nodes, arguments.waive_free_node_fraction)
     elif arguments.action == "freeze":
         print(json.dumps(freeze(arguments.root, arguments.nodes, arguments.migrate_from)))
     elif arguments.action == "watch":

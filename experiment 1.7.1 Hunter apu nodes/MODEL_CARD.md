@@ -19,6 +19,13 @@ exports. Adam, RNG and sampler reset were explicitly approved; this is not an
 exact continuation, and earlier samples may be reused. Hunter recovery after
 the warm start retains optimizer, sampler, RNG and training state privately.
 
+Checkpoints with a `migration` configuration record use the subsequently
+approved two-to-six-node handoff. That handoff preserves FP32 weights, Adam,
+sampler progress, step count and global batch 320; it does not repeat the
+step-153 initialization. Per-rank RNG streams are reseeded, so this topology
+change is not bitwise-identical continuation. A full 24-worker recovery gate
+is required before migrated training proceeds.
+
 All 638,820 task configurations are trainable. Selection uses the frozen 1.6
 primary monitoring subset with chronological validation, not held-out-task
 generalization or full validation/test. Training data are survivor-biased;
