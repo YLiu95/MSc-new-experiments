@@ -2,11 +2,18 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from huggingface_hub import ModelCard
 
 from ranker.data import write_json
 from ranking17.offline import maintain
-from ranking17.publish import cache_public_file, public_snapshot
+from ranking17.publish import SOURCE, cache_public_file, public_snapshot
 from ranking17.recovery import digest, verify
+
+
+def test_model_card_metadata_parses_for_publication():
+    card = ModelCard.load(SOURCE / "MODEL_CARD.md")
+    assert card.data.library_name == "pytorch"
+    assert "tensorboard" in card.data.tags
 
 
 def checkpoint(root, step, best=False):

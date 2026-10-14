@@ -30,17 +30,29 @@ Verified deployment status on 2026-10-14:
 	status 127, after 25 minutes 57 seconds. The synthetic checkpoint copies were
 	removed after preserving their matching manifests, configuration and state;
 	dataset and warm-start files were retained.
-	The hardware gate is not yet passed; production is not submitted.
+	That first job did not pass the hardware gate.
 - Replacement job `285957.hunter-pbs01` started at 21:12:07 CEST, eight seconds
 	after submission, on the same two nodes. It retains all frozen input hashes.
 	Its backward/Adam step took 11.0299 seconds with 39.578125 GiB peak reserved
-	memory; replacement backup timing and final recovery results are pending.
+	memory. Save took 146.8729 seconds and verified backup took 185.0916 seconds:
+	331.9645 seconds combined, below the 600-second limit. Bitwise next-update
+	replay and sampler replay passed on all eight workers as applicable. PBS
+	reported successful completion with exit status zero; the gate marker exists.
 - At 21:16 CEST only four MI300A nodes were free. Neither a two-node nor a
 	four-node production request satisfies the strict below-20-percent rule at
-	that availability; capacity must be checked again before submission.
-- The Windows-initiated local SSH publication forward was verified. No new
-	checkpoint or TensorBoard event has yet been verified on Hugging Face.
-	The five-minute credential-local publication relay has been started.
+	that availability. Capacity improved before the official submission below.
+- Official job `285983.hunter-pbs01` requested two nodes with 12 free at
+	submission (16.67 percent). It started at 21:29:25 CEST after eight seconds
+	queued, with walltime 10:29:44. Its running PBS allocation ends on
+	2026-10-15 at 07:59:09 CEST; the application cutoff is 07:39:09 CEST,
+	leaving 20 minutes for checkpointing before the absolute 08:00 deadline.
+	The official job repeats the matching hardware gate before training updates.
+- The Windows-initiated local SSH publication forward was verified. Hugging
+	Face commit `58b897f5d41b71eddfff61c41e956b566ff976e6` contains the model
+	card, passed-preflight report, warm-start provenance and TensorBoard events;
+	all four files passed remote size/digest verification. The hosted Training
+	metrics tab exists. These are preflight metrics, not trained-model results.
+	The five-minute credential-local relay is running for subsequent artifacts.
 
 The first compute deployment is archived in GitHub commit
 `7f01ca191d2cd6bb6f99b54de556427dc9fa28ac`, with frozen source SHA256
@@ -57,8 +69,11 @@ passed (one POSIX-only test deselected), including concurrency and corrupted-cop
 rejection. The revised source is deployed from GitHub commit
 `bbdcf3cee3ae1dd6e520a8e4c80491416c284444`, with frozen source SHA256
 `5910300725cd21a7b9a854f469419439be78ab7269a86de95a6a411a0d8319d0`,
-and is being tested by the replacement job. The 600-second timing requirement
-has not been relaxed.
+and passed the replacement job. The 600-second timing requirement has not
+been relaxed. The initial model-card publication encountered invalid tab
+indentation in YAML; indentless tag sequences fixed it, and an additional
+Hugging Face model-card parsing regression test passed locally. This metadata
+correction does not change the deployed training code or its source fingerprint.
 
 Runtime reports under each job's `reports/` are the source of execution evidence.
 The user approved resetting Adam/RNG/sampler because supplied public repositories

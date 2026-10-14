@@ -1,10 +1,10 @@
 ---
 library_name: pytorch
 tags:
-	- tensorboard
-	- time-series
-	- ranking
-	- rocm
+- tensorboard
+- time-series
+- ranking
+- rocm
 ---
 # Experiment 1.7.1: Hunter MI300A
 
