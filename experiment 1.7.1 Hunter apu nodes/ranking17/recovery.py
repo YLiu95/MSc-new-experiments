@@ -4,6 +4,7 @@ import os
 import random
 import shutil
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -38,18 +39,27 @@ def restore_rng(state, device):
     random.setstate(state["python"])
 
 
-def verify(directory, names=None):
+def verify(directory, names=None, *, workers=1):
     directory = Path(directory)
     if not (directory / "COMPLETE").is_file():
         raise ValueError("Checkpoint has no COMPLETE marker")
     if (directory / "COMPLETE").read_text().strip() != digest(directory / "manifest.json"):
         raise ValueError("Checkpoint manifest digest mismatch")
     manifest = json.loads((directory / "manifest.json").read_text())
-    for name in names if names is not None else manifest:
+
+    def verify_file(name):
         path = directory / name
         expected = manifest[name]
         if path.stat().st_size != expected["bytes"] or digest(path) != expected["sha256"]:
             raise ValueError(f"Checkpoint digest mismatch: {name}")
+
+    selected = names if names is not None else manifest
+    if workers == 1:
+        for name in selected:
+            verify_file(name)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(verify_file, selected))
     return manifest
 
 
@@ -121,17 +131,21 @@ def restore(directory, model, optimizer, config):
 
 
 def backup(directory, destination):
-    manifest = verify(directory)
+    manifest = verify(directory, workers=4)
     if destination.exists():
-        if verify(destination) != manifest:
+        if verify(destination, workers=4) != manifest:
             raise ValueError("Existing backup differs from the source checkpoint")
         return
     stage = destination.with_name(destination.name + ".staging")
     stage.mkdir(parents=True, exist_ok=False, mode=0o700)
-    for name in list(manifest) + ["manifest.json"]:
+
+    def copy_file(name):
         shutil.copy2(directory / name, stage / name)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(copy_file, list(manifest) + ["manifest.json"]))
     shutil.copy2(directory / "COMPLETE", stage / "COMPLETE")
-    verify(stage)
+    verify(stage, workers=4)
     stage.rename(destination)
 
 

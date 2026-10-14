@@ -61,6 +61,8 @@ Compute jobs never call GitHub or Hugging Face. Recovery checkpoints have
 digest-bound COMPLETE markers. Retention keeps latest recovery plus a verified
 workspace backup, and best/latest allowlisted inference exports. Workspace
 copies are not an independent failure domain. Quota is checked before saving.
+Backup copies and full-manifest hash checks use four workers for independent
+files. The destination is promoted only after every file passes verification.
 
 The credential-local Windows publisher uploads verified inference exports,
 aggregate reports and TensorBoard events to
