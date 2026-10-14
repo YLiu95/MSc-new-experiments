@@ -290,9 +290,31 @@ def serve(workspace, socket_path):
         server.serve_forever()
 
 
+def cache_public_file(root, name, entry, endpoint):
+    from urllib.parse import quote
+    path = (root / name).resolve()
+    path.relative_to(root.resolve())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() and path.stat().st_size == entry["bytes"] and digest(path) == entry["sha256"]:
+        return path
+    temporary = path.with_name(path.name + ".partial")
+    path.unlink(missing_ok=True)
+    temporary.unlink(missing_ok=True)
+    if shutil.disk_usage(root).free < entry["bytes"] + 2 * 1024**3:
+        raise RuntimeError("Insufficient local publication-cache space, including 2 GiB reserve")
+    with requests.get(endpoint + "/files/" + quote(entry["path"]), stream=True, timeout=(30, 120)) as response:
+        response.raise_for_status()
+        with temporary.open("wb") as output:
+            for block in response.iter_content(8 * 1024 * 1024):
+                output.write(block)
+    if temporary.stat().st_size != entry["bytes"] or digest(temporary) != entry["sha256"]:
+        raise ValueError("Export changed during transfer; retry on the next cycle")
+    temporary.replace(path)
+    return path
+
+
 def relay(root, endpoint, once=False):
     import threading
-    from urllib.parse import quote
     api = HfApi(token=credential("HF_TOKEN"))
     if api.whoami()["name"] != "YL95":
         raise ValueError("Wrong HF account")
@@ -312,20 +334,7 @@ def relay(root, endpoint, once=False):
             if files and current != previous:
                 paths = {"README.md": SOURCE / "MODEL_CARD.md"}
                 for name, entry in files.items():
-                    path = (root / name).resolve()
-                    path.relative_to(root.resolve())
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    if not path.exists() or path.stat().st_size != entry["bytes"] or digest(path) != entry["sha256"]:
-                        temporary = path.with_name(path.name + ".partial")
-                        with requests.get(endpoint + "/files/" + quote(entry["path"]), stream=True, timeout=(30, 120)) as response:
-                            response.raise_for_status()
-                            with temporary.open("wb") as output:
-                                for block in response.iter_content(8 * 1024 * 1024):
-                                    output.write(block)
-                        if temporary.stat().st_size != entry["bytes"] or digest(temporary) != entry["sha256"]:
-                            raise ValueError("Export changed during transfer; retry on the next cycle")
-                        temporary.replace(path)
-                    paths[name] = path
+                    paths[name] = cache_public_file(root, name, entry, endpoint)
                 commit = api.create_commit(HF, operations=[CommitOperationAdd(path_in_repo=name, path_or_fileobj=str(path))
                                                           for name, path in paths.items()],
                                            commit_message=f"Verified Hunter checkpoint and TensorBoard: {snapshot['job']}", num_threads=4)

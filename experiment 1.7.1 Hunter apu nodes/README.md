@@ -69,6 +69,10 @@ state and tokens are excluded from public uploads. Hugging Face provides the
 hosted Metrics/TensorBoard tab once event files are uploaded.
 The publisher retries on a five-minute cycle; transfer duration is additional.
 It needs Windows and the SSH tunnel to remain available. PBS training does not.
+Local publication files are a replaceable transfer cache, not recovery backups.
+Outdated cache files are removed before replacement; downloads require space
+for the incoming file plus 2 GiB of headroom and pass size/SHA256 verification
+before publication. Hunter recovery checkpoints are unaffected by cache eviction.
 
 Source backups go to `YLiu95/MSc-new-experiments/experiment 1.7.1 Hunter apu nodes`.
 Use `ranking17.publish source --root <local-report-dir> --credentials <dotenv>`
