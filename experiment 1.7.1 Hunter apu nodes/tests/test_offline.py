@@ -2,6 +2,7 @@ import json
 
 from ranker.data import write_json
 from ranking17.offline import maintain
+from ranking17.publish import public_snapshot
 from ranking17.recovery import digest, verify
 
 
@@ -40,3 +41,16 @@ def test_retention_preserves_best_export_and_verified_latest_recovery(tmp_path, 
     assert (best / "weights-00.safetensors").read_bytes() == b"1:0"
     assert not list(best.glob("recovery*"))
     assert not (best / "sampler.sqlite").exists()
+
+
+def test_public_snapshot_never_exposes_recovery_or_sampler(tmp_path, monkeypatch):
+    root = tmp_path / "artifacts" / "job-test"
+    monkeypatch.setenv("BACKUP_ROOT", str(tmp_path / "backups"))
+    checkpoint(root, 1, best=True)
+    maintain(root)
+    write_json(root / "reports" / "preflight.json", {"passed": True})
+    snapshot = public_snapshot(tmp_path)
+    assert snapshot["job"] == "job-test"
+    assert len([name for name in snapshot["files"] if name.endswith(".safetensors")]) == 8
+    assert all("recovery" not in entry["path"] and "sampler" not in entry["path"]
+               for entry in snapshot["files"].values())

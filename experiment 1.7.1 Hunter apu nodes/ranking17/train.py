@@ -246,6 +246,10 @@ def run(arguments):
             restored_sampler.close()
             if checkpoint_seconds + backup_seconds > 600:
                 raise RuntimeError("Measured recovery/backup duration leaves insufficient shutdown reserve")
+            for name, value in {"worst_microbatch_seconds": seconds, "checkpoint_seconds": checkpoint_seconds,
+                                "backup_seconds": backup_seconds, "peak_reserved_gib": peak.item() / 2**30}.items():
+                writer.add_scalar("preflight/" + name, value, 0)
+            writer.flush()
             write_json(root / "reports" / "preflight.json", {"passed": True, "parameters": model.parameter_count(),
                        "source_sha256": config["source_sha256"], "warm_start": provenance,
                        "memory_phases": memory_reports,

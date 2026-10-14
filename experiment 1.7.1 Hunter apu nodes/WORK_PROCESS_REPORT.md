@@ -15,3 +15,13 @@ Runtime reports under each job's `reports/` are the source of execution evidence
 The user approved resetting Adam/RNG/sampler because supplied public repositories
 contain inference files only. Private training panels and recovery states are
 never included in public source or inference uploads.
+
+2026-10-14 deployment update: the initial Hunter Linux suite passed all 17 tests,
+including POSIX checkpoint permissions. Source and 38 offline wheels were
+transferred and the workspace environment installed without replacing PyTorch.
+Pip reported an unrelated inherited elasticsearch7/urllib3 constraint conflict;
+the experiment test suite passed, but this environment is not certified for
+elasticsearch7. Both SSH sessions reset during dataset transfer. The dataset
+and warm-start transfer are incomplete; no PBS job has been submitted and no
+full-model APU preflight or training update has run. Resume verified-file
+transfer after reconnecting; do not treat partial artifacts as ready inputs.

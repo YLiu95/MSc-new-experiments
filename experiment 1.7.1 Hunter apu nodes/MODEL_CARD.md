@@ -13,7 +13,7 @@ inference requires all four weight shards and the published model configuration.
 FP32 training weights/Adam state, BF16 compute, original dropout semantics,
 global batch 320 and microbatch 1.
 
-Warm-started from Experiment 1.7 latest step 153 at source revision
+Initialization uses Experiment 1.7 latest step 153 at source revision
 `ecf683c5cfd3f49c9fbf2ce5e53f2f637dfce9b9`. Source matrices were BF16 inference
 exports. Adam, RNG and sampler reset were explicitly approved; this is not an
 exact continuation, and earlier samples may be reused. Hunter recovery after
