@@ -1,0 +1,38 @@
+---
+library_name: pytorch
+tags:
+	- tensorboard
+	- time-series
+	- ranking
+	- rocm
+---
+# Experiment 1.7.1: Hunter MI300A
+
+Task-conditioned whole-basket ranker, 10,193,843,857 parameters. TP=4;
+inference requires all four weight shards and the published model configuration.
+FP32 training weights/Adam state, BF16 compute, original dropout semantics,
+global batch 320 and microbatch 1.
+
+Warm-started from Experiment 1.7 latest step 153 at source revision
+`ecf683c5cfd3f49c9fbf2ce5e53f2f637dfce9b9`. Source matrices were BF16 inference
+exports. Adam, RNG and sampler reset were explicitly approved; this is not an
+exact continuation, and earlier samples may be reused. Hunter recovery after
+the warm start retains optimizer, sampler, RNG and training state privately.
+
+All 638,820 task configurations are trainable. Selection uses the frozen 1.6
+primary monitoring subset with chronological validation, not held-out-task
+generalization or full validation/test. Training data are survivor-biased;
+do not interpret monitoring scores as investment performance or financial advice.
+
+Pinned data revision: `bcbbefdbe2313673895eb1a0d354747a9f1624fa`.
+The source dataset declares ODC-BY and Yahoo provenance; the data owner has
+disputed that attribution. Assess data rights independently before redistribution
+or commercial use. Exact inference also needs the private identity vocabulary
+and recorded normalization metadata.
+The original corrected source-imputation and future-label availability rules
+are preserved. Label availability is never used as an attention mask.
+
+Only inference weights, configuration, aggregate reports and TensorBoard events
+are published here. See the Metrics tab for hosted TensorBoard. Consult
+`reports/` for actual completed preflight/training evidence; code readiness
+alone is not a successful hardware test or training result.
