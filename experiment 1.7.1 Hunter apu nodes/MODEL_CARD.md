@@ -22,7 +22,8 @@ the warm start retains optimizer, sampler, RNG and training state privately.
 Checkpoints with a `migration` configuration record use the subsequently
 approved two-to-six-node handoff. That handoff preserves FP32 weights, Adam,
 sampler progress, step count and global batch 320; it does not repeat the
-step-153 initialization. Per-rank RNG streams are reseeded, so this topology
+step-153 initialization. RNG streams are reseeded per DP replica, staying
+aligned within each TP4 group to preserve dropout behavior. This topology
 change is not bitwise-identical continuation. A full 24-worker recovery gate
 is required before migrated training proceeds.
 

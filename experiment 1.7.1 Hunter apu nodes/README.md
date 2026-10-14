@@ -62,8 +62,9 @@ waived the below-20-percent free-node rule for this request. Physical free
 capacity, the 600-second queue limit and the absolute deadline remain enforced.
 This is not a new step-153 warm start: FP32 weights, Adam state, the sampler
 ledger, scheduled count, best metric and learning-rate step are preserved.
-Per-rank RNG streams are reseeded; continuation is explicitly not bitwise
-identical to staying on two nodes. Global batch remains 320; the existing
+RNG streams are reseeded per DP replica and remain aligned within each TP4
+group; continuation is explicitly not bitwise identical to staying on two
+nodes. Global batch remains 320; the existing
 zero-weight rank-padding logic handles its nondivisibility by six.
 
 Use a separate staged source directory. The source job must finish cleanly
@@ -82,6 +83,13 @@ The migration saves and verifies a new recovery/backup pair before any new
 optimizer update. Only then are the superseded parent recovery files retired;
 the previous best inference export and source provenance are retained.
 Same-layout exact resume remains a separate, unchanged operation.
+
+The one-time `ranking17.launch handoff` action can coordinate this procedure
+after the source job's `control/STOP` marker is set. It waits at most 20 minutes
+for successful PBS completion, verifies both complete checkpoint copies,
+checks gate-space headroom, archives the redundant backup's metadata, removes
+only that backup, and calls the six-node submission once. A persistent lock
+prevents duplicate handoffs; failures require inspection, not automatic retries.
 
 ## Recovery and Publication
 

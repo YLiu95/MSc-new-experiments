@@ -89,3 +89,41 @@ Reviewed client logs did not establish a security-policy trigger. Direct HTTPS
 downloads from Hunter timed out; the completed transfer used client-initiated
 SFTP, not reverse forwarding. The final resumed transfer ran at about 4 MB/s;
 its success does not establish the cause of the earlier disconnects.
+
+## Approved Six-Node Handoff
+
+On 2026-10-14 the user requested six nodes until 08:00 CEST on 15 October and
+explicitly waived the below-20-percent rule for this request. At 23:34 CEST,
+22 MI300A nodes were free. The user separately approved non-bitwise topology
+migration preserving FP32 weights, Adam, sampler progress and the step counter,
+with reseeded per-rank RNG streams. Global batch 320 and TP4 are unchanged.
+
+The migration source is isolated in `source-six-node-20261014`; the original
+job's source was not overwritten. The initial handoff-controller archive SHA256 is
+`4bdd8c9c9ee966d137574118d5dce1f0b2919a2a13e5922ad60b603ea6c75fc2`,
+backed up in GitHub commit `7ac7697dd9d68282a808b0eabb3e380430b83256`.
+Hunter passed all 44 tests in 4.59 seconds plus shell syntax checks. The most
+recent focused Windows checks passed 27 tests with the POSIX-only case excluded.
+An initial isolated test command accidentally replaced the module PYTHONPATH;
+preserving the inherited paths corrected collection without installing packages.
+
+A graceful STOP marker was sent to job `285983.hunter-pbs01`. Its final training
+record confirms step 192 and 12,480 scheduled samples, with best monitoring
+metric 0.0794105090388314. The final backup passed verification in 296.3562
+seconds; checkpoint manifest SHA256 is
+`61b85c551eeb758c2ab183304c2818a5eeadb490b39333409964c6d6069b3150`.
+The detached one-time handoff controller was started on Hunter as PID 3635320.
+It requires successful source-job completion and verifies both full copies
+before removing only the redundant backup to make room for the new gate.
+The original checkpoint remains until a migrated recovery/backup pair has
+passed verification; the old best inference export and provenance are retained.
+The 600-second queue limit, full 24-worker preflight, 20-minute shutdown reserve
+and 08:00 CEST deadline remain enforced. Submission and hardware migration
+results must be checked in the runtime handoff and job reports; preparation
+alone is not evidence of successful six-node training.
+
+Before submission, the handoff controller was paused during final checkpoint
+verification to correct migration reseeding: the seed is shared by ranks in
+the same TP4 group and differs across DP replicas, preserving replicated
+dropout behavior. The focused migration tests passed with explicit same-TP
+and different-DP assertions. No six-node job had been submitted at that point.

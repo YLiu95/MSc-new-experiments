@@ -50,8 +50,9 @@ def test_migration_preserves_model_adam_and_progress(tmp_path, monkeypatch):
     original(torch.ones(1, 3)).sum().backward()
     original_optimizer.step()
     expected = recovery.tensor_digest(original, original_optimizer)
-    torch.save({"model": original.state_dict(), "optimizer": original_optimizer.state_dict()},
-               tmp_path / "recovery-03.pt")
+    for shard in range(4):
+        torch.save({"model": original.state_dict(), "optimizer": original_optimizer.state_dict()},
+                   tmp_path / f"recovery-{shard:02d}.pt")
     write_json(tmp_path / "config.json", previous)
     write_json(tmp_path / "state.json", {"world": 8, "step": 185, "scheduled": 10240, "best_metric": 0.079})
     (tmp_path / "sampler.sqlite").write_bytes(b"unchanged sampler fixture")
@@ -61,7 +62,7 @@ def test_migration_preserves_model_adam_and_progress(tmp_path, monkeypatch):
     current["migration"]["parent_manifest_sha256"] = digest(tmp_path / "manifest.json")
     monkeypatch.setattr(recovery.dist, "get_world_size", lambda: 24)
     restored = torch.nn.Linear(3, 2)
-    restored.context = SimpleNamespace(tp_rank=3, rank=23)
+    restored.context = SimpleNamespace(tp_rank=3, rank=23, dp_rank=5)
     optimizer = torch.optim.Adam(restored.parameters(), lr=0.5)
     state = recovery.restore_migrated(tmp_path, restored, optimizer, current)
     assert recovery.tensor_digest(restored, optimizer) == expected
@@ -73,6 +74,12 @@ def test_migration_preserves_model_adam_and_progress(tmp_path, monkeypatch):
     expected_random = torch.rand(5)
     recovery.restore_migrated(tmp_path, restored, optimizer, current)
     assert torch.equal(torch.rand(5), expected_random)
+    restored.context = SimpleNamespace(tp_rank=0, rank=20, dp_rank=5)
+    recovery.restore_migrated(tmp_path, restored, optimizer, current)
+    assert torch.equal(torch.rand(5), expected_random)
+    restored.context = SimpleNamespace(tp_rank=0, rank=4, dp_rank=1)
+    recovery.restore_migrated(tmp_path, restored, optimizer, current)
+    assert not torch.equal(torch.rand(5), expected_random)
     monkeypatch.setattr(recovery.dist, "get_world_size", lambda: 8)
     with pytest.raises(ValueError, match="24 target workers"):
         recovery.restore_migrated(tmp_path, restored, optimizer, current)

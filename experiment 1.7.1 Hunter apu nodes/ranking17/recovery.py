@@ -166,7 +166,7 @@ def restore_migrated(directory, model, optimizer, config):
     optimizer.load_state_dict(checkpoint["optimizer"])
     del checkpoint
     torch.cuda.empty_cache()
-    seed = config["model"]["seed"] + state["step"] * world + context.rank
+    seed = config["model"]["seed"] + state["step"] * world + context.dp_rank
     random.seed(seed)
     np.random.seed(seed % 2**32)
     torch.manual_seed(seed)
