@@ -127,3 +127,29 @@ verification to correct migration reseeding: the seed is shared by ranks in
 the same TP4 group and differs across DP replicas, preserving replicated
 dropout behavior. The focused migration tests passed with explicit same-TP
 and different-DP assertions. No six-node job had been submitted at that point.
+
+The corrected deployment archive is
+`085df23f397510a264edb278577b396dbb8f4441d22ecf7fc9b3280c915d937a`,
+backed up in GitHub commit `fe0ea023be7c23bd6c0d2de9f949cabd968ee34b`.
+All 44 Hunter tests passed again in 4.69 seconds, and shell syntax passed.
+The same handoff controller resumed and submitted job `286067.hunter-pbs01`
+for six nodes; six MI300A nodes were free at submission. The explicit fraction
+waiver was recorded. The original allocation finished successfully and both
+full checkpoint copies were verified before the redundant backup was removed,
+freeing 142,769,244,942 payload bytes while retaining the original checkpoint.
+
+While the job queued, PBS walltime was reduced from 07:51:18 to 07:41:18 so
+even a start near the ten-minute queue limit would respect the absolute end.
+PBS initially reported insufficient Qlist resources. It subsequently started
+at 00:14:39 CEST on 2026-10-15, about 6 minutes 57 seconds after submission.
+At 00:17:48 PBS confirmed six nodes running. The user then explicitly chose
+to keep those already allocated six nodes instead of replacing them with four
+or two. No replacement reservation was submitted.
+
+The verified allocation end is 07:55:57 CEST, with an application cutoff of
+07:35:57 CEST and a 20-minute shutdown reserve. Frozen runtime source SHA256 is
+`8c69e25bf91e8954e174d94d81f7a74cf45d3f3957ccb2f531614c215709b131`.
+The run configuration binds the verified step-192 parent manifest, 12,480
+scheduled samples and preserved optimizer/sampler state. The 24-worker gate,
+actual migrated baseline and first new training update were still pending at
+that check; allocation alone is not proof that migration has completed.
