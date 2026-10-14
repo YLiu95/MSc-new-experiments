@@ -130,6 +130,52 @@ def restore(directory, model, optimizer, config):
     return state
 
 
+def validate_migration_config(previous, current):
+    allowed = {"dp", "source_sha256", "migration", "warm_start", "optimizer_reset",
+               "sampler_reset", "possible_sample_reuse"}
+    changed = {key for key in previous.keys() | current.keys() if previous.get(key) != current.get(key)}
+    if changed - allowed:
+        raise ValueError(f"Migration changes the frozen training contract: {sorted(changed - allowed)}")
+    if previous["tp"] != 4 or previous["dp"] != 2 or current["tp"] != 4 or current["dp"] != 6:
+        raise ValueError("Only the approved TP4 DP2-to-DP6 migration is supported")
+    migration = current.get("migration", {})
+    if (migration.get("parent_source_sha256") != previous["source_sha256"]
+            or not migration.get("rng_reseeded") or not migration.get("optimizer_preserved")
+            or not migration.get("sampler_preserved") or migration.get("bitwise_continuation") is not False
+            or current.get("optimizer_reset") is not False or current.get("sampler_reset") is not False
+            or current.get("warm_start") is not False or current.get("possible_sample_reuse") is not False):
+        raise ValueError("Missing approved migration provenance")
+
+
+def restore_migrated(directory, model, optimizer, config):
+    context = model.context
+    names = [f"recovery-{context.tp_rank:02d}.pt", "state.json", "config.json", "sampler.sqlite"]
+    verify(directory, names)
+    previous = json.loads((directory / "config.json").read_text())
+    validate_migration_config(previous, config)
+    if digest(directory / "manifest.json") != config["migration"]["parent_manifest_sha256"]:
+        raise ValueError("Migration checkpoint differs from the approved source")
+    state = json.loads((directory / "state.json").read_text())
+    world = dist.get_world_size()
+    if state["world"] != 8 or world != 24:
+        raise ValueError("Migration requires an 8-worker checkpoint and 24 target workers")
+    checkpoint = torch.load(directory / names[0], map_location="cpu", weights_only=True)
+    model.load_state_dict(checkpoint["model"])
+    optimizer.state.clear()
+    torch.cuda.empty_cache()
+    optimizer.load_state_dict(checkpoint["optimizer"])
+    del checkpoint
+    torch.cuda.empty_cache()
+    seed = config["model"]["seed"] + state["step"] * world + context.rank
+    random.seed(seed)
+    np.random.seed(seed % 2**32)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    state.update(world=world, migration_parent_world=8, migration_parent_step=state["step"],
+                 migration_rng_reseeded=True, migration_bitwise_continuation=False)
+    return state
+
+
 def backup(directory, destination):
     manifest = verify(directory, workers=4)
     if destination.exists():

@@ -1,4 +1,8 @@
+import importlib
+import json
 import unittest
+
+from ranker.data import write_json
 
 from ranking17.pbs import (
     PRODUCTION_END, free_apu_nodes, production_nodes, running_deadlines,
@@ -15,11 +19,25 @@ class PBSPolicyTests(unittest.TestCase):
             production_nodes(10)
 
     def test_supported_layouts(self):
-        for nodes in (1, 2, 3, 4):
+        for nodes in (1, 2, 3, 4, 6):
             self.assertEqual(validate_nodes(nodes), nodes)
-        for nodes in (0, 5, True):
+        for nodes in (0, 5, 7, True):
             with self.assertRaises(ValueError):
                 validate_nodes(nodes)
+
+    def test_six_node_waiver_is_explicit_and_capacity_checked(self):
+        self.assertEqual(production_nodes(22, requested=6, waive_fraction=True), 6)
+        self.assertEqual(production_nodes(31, requested=6), 6)
+        for available in (22, 30):
+            with self.assertRaises(ValueError):
+                production_nodes(available, requested=6)
+        with self.assertRaises(ValueError):
+            production_nodes(5, requested=6, waive_fraction=True)
+        with self.assertRaises(ValueError):
+            production_nodes(22, waive_fraction=True)
+        for requested in (True, 1, 3, 5, 7):
+            with self.assertRaises(ValueError):
+                production_nodes(22, requested=requested, waive_fraction=True)
 
     def test_only_unoccupied_free_apus_count(self):
         apu = {"state": "free", "resources_available": {"node_type": "mi300a512gb912c,mi300a"}}
@@ -48,6 +66,44 @@ class PBSPolicyTests(unittest.TestCase):
         self.assertEqual(walltime(1500), "00:25:00")
         with self.assertRaises(ValueError):
             walltime(0)
+
+
+def test_migration_submission_uses_isolated_source_and_records_waiver(tmp_path, monkeypatch):
+    monkeypatch.setenv("HUNTER_WORKSPACE", str(tmp_path))
+    launch = importlib.import_module("ranking17.launch")
+    monkeypatch.setattr(launch, "WORKSPACE", tmp_path)
+    monkeypatch.setattr(launch, "BASE", tmp_path / "artifacts")
+    monkeypatch.setattr(launch, "SOURCE", tmp_path / "source-six")
+    monkeypatch.setattr(launch.time, "time", lambda: PRODUCTION_END - 7200)
+    control = tmp_path / "artifacts" / "control"
+    control.mkdir(parents=True)
+    write_json(control / "two-node-preflight.json", {"passed": True, "world": 8, "source_sha256": "parent"})
+    monkeypatch.setattr(launch, "freeze", lambda *args: {
+        "source_sha256": "new", "migration": {"parent_source_sha256": "parent"}})
+    commands = []
+
+    def check_output(command, **kwargs):
+        commands.append(command)
+        if command[0] == "pbsnodes":
+            return json.dumps({"nodes": {str(index): {"state": "free", "resources_available": {"node_type": "mi300a"}}
+                                        for index in range(6)}})
+        if command[0] == "qstat":
+            return json.dumps({"Jobs": {"285983.hunter-pbs01": {"job_state": "F"}}})
+        assert command[0] == "qsub"
+        return "123.hunter-pbs01\n"
+
+    monkeypatch.setattr(launch.subprocess, "check_output", check_output)
+    monkeypatch.setattr(launch.subprocess, "Popen", lambda *args, **kwargs: None)
+    checkpoint = tmp_path / "artifacts" / "job-285983.hunter-pbs01" / "checkpoints" / "step_185"
+    launch.submit(6, "production", checkpoint, True)
+    submitted = json.loads((control / "submission-123.hunter-pbs01.json").read_text())
+    assert submitted["nodes"] == 6 and submitted["free_node_fraction_waived"] is True
+    assert submitted["seconds"] == 7140
+    assert submitted["queue_deadline_epoch"] - submitted["submitted_epoch"] == 600
+    command = commands[-1]
+    assert "select=6:node_type=mi300a:mpiprocs=1" in command
+    assert f"HUNTER_SOURCE={tmp_path / 'source-six'}" in command[command.index("-v") + 1]
+    assert f"HUNTER_MIGRATE_FROM={checkpoint.resolve()}" in command[command.index("-v") + 1]
 
 
 if __name__ == "__main__":

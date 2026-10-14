@@ -16,7 +16,7 @@ from torch._subclasses.fake_tensor import FakeTensorMode
 from ranker.checkpoints import digest
 from ranker.data import write_json
 from .model import ModelConfig, RankingModel, ParallelContext
-from .recovery import backup_root
+from .recovery import backup_root, validate_migration_config, verify
 from .pbs import (PRODUCTION_END, QUEUE_WAIT_SECONDS, free_apu_nodes, production_nodes,
                   running_deadlines, validate_nodes, walltime)
 
@@ -31,7 +31,7 @@ def job_info(job_id):
     return json.loads(subprocess.check_output(["qstat", "-f", "-F", "json", job_id], text=True))["Jobs"][job_id]
 
 
-def freeze(root, nodes):
+def freeze(root, nodes, migrate_from=None):
     validate_nodes(nodes)
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     root.chmod(0o700)
@@ -70,6 +70,23 @@ def freeze(root, nodes):
               "master_weights": "float32", "matrix_compute": "bfloat16",
               "private_backup_root": str(backup_root()), "backup_independent_failure_domain": False,
               "shutdown_reserve_seconds": 1200}
+    if migrate_from is not None:
+        migrate_from = migrate_from.resolve()
+        migrate_from.relative_to((BASE / "job-285983.hunter-pbs01" / "checkpoints").resolve())
+        verify(migrate_from, ("config.json", "state.json", "sampler.sqlite"))
+        previous = json.loads((migrate_from / "config.json").read_text())
+        state = json.loads((migrate_from / "state.json").read_text())
+        finished = json.loads((migrate_from.parents[1] / "TRAINING_DONE.json").read_text())
+        if any(state[key] != finished[key] for key in ("step", "scheduled", "world")):
+            raise ValueError("Migration requires the final completed source checkpoint")
+        config.update(warm_start=False, optimizer_reset=False, sampler_reset=False, possible_sample_reuse=False,
+                      migration={"parent_checkpoint": str(migrate_from), "parent_step": state["step"],
+                                 "parent_scheduled": state["scheduled"], "parent_world": state["world"],
+                                 "parent_source_sha256": previous["source_sha256"],
+                                 "parent_manifest_sha256": digest(migrate_from / "manifest.json"),
+                                 "optimizer_preserved": True, "sampler_preserved": True,
+                                 "rng_reseeded": True, "bitwise_continuation": False})
+        validate_migration_config(previous, config)
     path = root / "config.json"
     if path.exists() and json.loads(path.read_text()) != config:
         raise ValueError("Refusing to change an already frozen configuration")
@@ -84,20 +101,27 @@ def deadline(root):
     print(report["stop_epoch"], flush=True)
 
 
-def submit(nodes=None, mode="preflight"):
+def submit(nodes=None, mode="preflight", migrate_from=None, waive_fraction=False):
     BASE.mkdir(parents=True, exist_ok=True, mode=0o700)
     BASE.chmod(0o700)
     control = BASE / "control"
     control.mkdir(exist_ok=True)
+    if (migrate_from is not None or waive_fraction) and mode != "production":
+        raise ValueError("Migration and policy waivers require production mode")
+    if nodes == 6 and migrate_from is None:
+        raise ValueError("Six-node production requires the approved checkpoint migration")
     if mode == "production":
         gate = json.loads((control / "two-node-preflight.json").read_text())
         if not gate["passed"] or gate["world"] != 8:
             raise ValueError("Successful two-node preflight required")
         available = free_apu_nodes(json.loads(subprocess.check_output(["pbsnodes", "-a", "-F", "json"], text=True)))
-        selected = production_nodes(available)
-        nodes = selected if nodes is None else nodes
-        if nodes not in (2, 4) or nodes > selected:
-            raise ValueError("Production request violates the free-node policy")
+        nodes = production_nodes(available, requested=nodes, waive_fraction=waive_fraction)
+        if migrate_from is not None:
+            parent_id = migrate_from.resolve().parents[1].name.removeprefix("job-")
+            parent_job = json.loads(subprocess.check_output(
+                ["qstat", "-x", "-f", "-F", "json", parent_id], text=True))["Jobs"]
+            if next(iter(parent_job.values()))["job_state"] != "F":
+                raise ValueError("The source allocation must finish before submitting its migration")
         seconds = min(86400, math.floor(PRODUCTION_END - time.time() - 60))
     else:
         nodes = 2 if nodes is None else nodes
@@ -107,21 +131,27 @@ def submit(nodes=None, mode="preflight"):
     if seconds < 3600 or time.time() + seconds > PRODUCTION_END:
         raise ValueError("Insufficient time before the absolute deadline")
     if mode == "production" or (PANEL / "meta.json").is_file():
-        ready = freeze(control / f"ready-{mode}-{time.time_ns()}", nodes)
-        if mode == "production" and gate["source_sha256"] != ready["source_sha256"]:
+        ready = freeze(control / f"ready-{mode}-{time.time_ns()}", nodes, migrate_from)
+        expected_source = ready["migration"]["parent_source_sha256"] if migrate_from else ready["source_sha256"]
+        if mode == "production" and gate["source_sha256"] != expected_source:
             raise ValueError("Code changed after the two-node preflight; rerun the test")
     elif not (WORKSPACE / "dataset" / "download.json").is_file() or not (WORKSPACE / "warmstart" / "download.json").is_file():
         raise ValueError("Verified dataset and warm-start artifacts must be staged before requesting nodes")
+    environment = f"HUNTER_WORKSPACE={WORKSPACE},HUNTER_SOURCE={SOURCE},HUNTER_MODE={mode}"
+    if migrate_from is not None:
+        environment += f",HUNTER_MIGRATE_FROM={migrate_from.resolve()}"
     command = ["qsub", "-N", f"exp171-{mode}", "-l", f"select={nodes}:node_type=mi300a:mpiprocs=1",
                "-l", f"walltime={walltime(seconds)}", "-l", "ws12=True", "-j", "oe",
                "-o", str(control / f"pbs-{mode}.log"), "-v",
-               f"HUNTER_WORKSPACE={WORKSPACE},HUNTER_MODE={mode}", str(SOURCE / "batch_entry.sh")]
+               environment, str(SOURCE / "batch_entry.sh")]
     submitted = time.time()
     job_id = subprocess.check_output(command, cwd=SOURCE, text=True).strip()
     if not job_id.split(".")[0].isdigit():
         raise ValueError("Invalid PBS job identifier")
     report = {"job_id": job_id, "nodes": nodes, "free_apus": available, "seconds": seconds,
               "mode": mode, "command": command, "submitted_epoch": submitted,
+              "free_node_fraction_waived": waive_fraction,
+              "migration_from": str(migrate_from) if migrate_from else None,
               "queue_deadline_epoch": submitted + QUEUE_WAIT_SECONDS}
     write_json(control / f"submission-{job_id}.json", report)
     with (control / f"queue-watch-{job_id}.log").open("a") as log:
@@ -158,13 +188,15 @@ if __name__ == "__main__":
     parser.add_argument("--root", type=Path)
     parser.add_argument("--nodes", type=int)
     parser.add_argument("--mode", choices=("preflight", "production"), default="preflight")
+    parser.add_argument("--migrate-from", type=Path)
+    parser.add_argument("--waive-free-node-fraction", action="store_true")
     parser.add_argument("--job-id")
     parser.add_argument("--submitted", type=float)
     arguments = parser.parse_args()
     if arguments.action == "submit":
-        submit(arguments.nodes, arguments.mode)
+        submit(arguments.nodes, arguments.mode, arguments.migrate_from, arguments.waive_free_node_fraction)
     elif arguments.action == "freeze":
-        print(json.dumps(freeze(arguments.root, arguments.nodes)))
+        print(json.dumps(freeze(arguments.root, arguments.nodes, arguments.migrate_from)))
     elif arguments.action == "watch":
         watch(arguments.job_id, arguments.submitted)
     else:

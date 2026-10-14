@@ -7,12 +7,20 @@ SHUTDOWN_RESERVE_SECONDS = 1200
 
 
 def validate_nodes(nodes):
-    if isinstance(nodes, bool) or nodes not in (1, 2, 3, 4):
-        raise ValueError("Hunter supports 1-4 MI300A nodes")
+    if isinstance(nodes, bool) or nodes not in (1, 2, 3, 4, 6):
+        raise ValueError("Hunter supports 1-4 or 6 MI300A nodes")
     return nodes
 
 
-def production_nodes(free_nodes):
+def production_nodes(free_nodes, requested=None, waive_fraction=False):
+    if requested is not None:
+        if isinstance(requested, bool) or requested not in (2, 4, 6):
+            raise ValueError("Production requires 2, 4 or 6 MI300A nodes")
+        if requested > free_nodes or (not waive_fraction and requested * 5 >= free_nodes):
+            raise ValueError("Production request violates the free-node policy")
+        return requested
+    if waive_fraction:
+        raise ValueError("A policy waiver requires an explicit node count")
     for nodes in (4, 2):
         if nodes * 5 < free_nodes:
             return nodes

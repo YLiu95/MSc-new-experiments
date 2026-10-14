@@ -1,9 +1,11 @@
+import json
 import stat
 import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 from ranker.data import write_json
 from ranker.publish import git_blob_file
@@ -17,6 +19,63 @@ def make_checkpoint(directory, contents):
     payload.write_bytes(contents)
     write_json(directory / "manifest.json", {payload.name: {"bytes": len(contents), "sha256": digest(payload)}})
     (directory / "COMPLETE").write_text(digest(directory / "manifest.json") + "\n")
+
+
+def migration_configs():
+    previous = {"tp": 4, "dp": 2, "model": {"seed": 42}, "global_batch": 320,
+                "source_sha256": "parent", "data_meta_sha256": "frozen-data",
+                "warm_start": True, "optimizer_reset": True, "sampler_reset": True,
+                "possible_sample_reuse": True}
+    current = {**previous, "dp": 6, "source_sha256": "migration-source", "warm_start": False,
+               "optimizer_reset": False, "sampler_reset": False, "possible_sample_reuse": False,
+               "migration": {"parent_source_sha256": "parent", "rng_reseeded": True,
+                             "optimizer_preserved": True, "sampler_preserved": True,
+                             "bitwise_continuation": False}}
+    return previous, current
+
+
+@pytest.mark.parametrize("field,value", [("global_batch", 324), ("tp", 8), ("dp", 4),
+                                        ("data_meta_sha256", "different"), ("optimizer_reset", True)])
+def test_migration_rejects_unapproved_changes(field, value):
+    previous, current = migration_configs()
+    current[field] = value
+    with pytest.raises(ValueError):
+        recovery.validate_migration_config(previous, current)
+
+
+def test_migration_preserves_model_adam_and_progress(tmp_path, monkeypatch):
+    previous, current = migration_configs()
+    original = torch.nn.Linear(3, 2)
+    original_optimizer = torch.optim.Adam(original.parameters(), lr=0.003)
+    original(torch.ones(1, 3)).sum().backward()
+    original_optimizer.step()
+    expected = recovery.tensor_digest(original, original_optimizer)
+    torch.save({"model": original.state_dict(), "optimizer": original_optimizer.state_dict()},
+               tmp_path / "recovery-03.pt")
+    write_json(tmp_path / "config.json", previous)
+    write_json(tmp_path / "state.json", {"world": 8, "step": 185, "scheduled": 10240, "best_metric": 0.079})
+    (tmp_path / "sampler.sqlite").write_bytes(b"unchanged sampler fixture")
+    write_json(tmp_path / "manifest.json", {path.name: {"bytes": path.stat().st_size, "sha256": digest(path)}
+                                           for path in tmp_path.iterdir()})
+    (tmp_path / "COMPLETE").write_text(digest(tmp_path / "manifest.json") + "\n")
+    current["migration"]["parent_manifest_sha256"] = digest(tmp_path / "manifest.json")
+    monkeypatch.setattr(recovery.dist, "get_world_size", lambda: 24)
+    restored = torch.nn.Linear(3, 2)
+    restored.context = SimpleNamespace(tp_rank=3, rank=23)
+    optimizer = torch.optim.Adam(restored.parameters(), lr=0.5)
+    state = recovery.restore_migrated(tmp_path, restored, optimizer, current)
+    assert recovery.tensor_digest(restored, optimizer) == expected
+    assert optimizer.param_groups[0]["lr"] == 0.003
+    assert state["world"] == 24 and state["step"] == 185 and state["scheduled"] == 10240
+    assert state["best_metric"] == 0.079 and state["migration_bitwise_continuation"] is False
+    assert json.loads((tmp_path / "state.json").read_text())["world"] == 8
+    assert (tmp_path / "sampler.sqlite").read_bytes() == b"unchanged sampler fixture"
+    expected_random = torch.rand(5)
+    recovery.restore_migrated(tmp_path, restored, optimizer, current)
+    assert torch.equal(torch.rand(5), expected_random)
+    monkeypatch.setattr(recovery.dist, "get_world_size", lambda: 8)
+    with pytest.raises(ValueError, match="24 target workers"):
+        recovery.restore_migrated(tmp_path, restored, optimizer, current)
 
 
 def test_private_copy_and_corruption_rejection(tmp_path, monkeypatch):

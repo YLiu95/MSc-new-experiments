@@ -1,7 +1,7 @@
 # Experiment 1.7.1: Hunter MI300A
 
 PBS/ROCm port of Experiment 1.7. Model: 10,193,843,857 parameters;
-TP=4 within each node, DP across 1-4 nodes. Four GPU workers per node.
+TP=4 within each node, DP across 1-4 or 6 nodes. Four GPU workers per node.
 Global batch 320, microbatch 1, BF16 compute, FP32 weights/Adam state,
 activation checkpointing, attention dropout 0.15 and identity dropout 0.10.
 No padding, dropout relocation, compile, DeepSpeed or FP8 changes.
@@ -54,6 +54,34 @@ more than 10 are free. No request is submitted below that threshold. The
 detached watchdog cancels queued requests after 600 seconds; no restart chain
 is created. Deadlines use the running PBS allocation and are capped at
 2026-10-15 08:00 CEST, with at least 20 minutes reserved for shutdown.
+
+## Approved Six-Node Migration
+
+The user approved a DP2-to-DP6 transition from job `285983.hunter-pbs01` and
+waived the below-20-percent free-node rule for this request. Physical free
+capacity, the 600-second queue limit and the absolute deadline remain enforced.
+This is not a new step-153 warm start: FP32 weights, Adam state, the sampler
+ledger, scheduled count, best metric and learning-rate step are preserved.
+Per-rank RNG streams are reseeded; continuation is explicitly not bitwise
+identical to staying on two nodes. Global batch remains 320; the existing
+zero-weight rank-padding logic handles its nondivisibility by six.
+
+Use a separate staged source directory. The source job must finish cleanly
+and its final checkpoint must be verified before submission:
+
+```bash
+python -m ranking17.launch submit --mode production --nodes 6 \
+	--migrate-from "$CHECKPOINT" --waive-free-node-fraction
+```
+
+The parent must match the passed two-node gate. The new allocation runs the
+complete full-model gate on all 24 workers before restoring the parent.
+Given the workspace quota, retain the verified original checkpoint while
+removing only its redundant same-filesystem backup before the new gate.
+The migration saves and verifies a new recovery/backup pair before any new
+optimizer update. Only then are the superseded parent recovery files retired;
+the previous best inference export and source provenance are retained.
+Same-layout exact resume remains a separate, unchanged operation.
 
 ## Recovery and Publication
 

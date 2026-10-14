@@ -26,7 +26,7 @@ from ranker.sampler import Sampler
 from ranker.train import informative_count, learning_rate, optimizer_for
 from .model import ModelConfig, RankingModel
 from .offline import maintain
-from .recovery import backup, digest, restore, save, tensor_digest
+from .recovery import backup, digest, restore, restore_migrated, save, tensor_digest
 from .warmstart import load_warm_start
 
 
@@ -167,7 +167,7 @@ def run(arguments):
     if model.parameter_count() != config["parameters"] or model.parameter_count() <= 10_000_000_000:
         raise ValueError("Parameter-count gate failed")
     provenance = None
-    if not arguments.resume:
+    if not arguments.resume and not arguments.migrate_from:
         if arguments.warm_start is None:
             raise ValueError("The approved step-153 warm start is required")
         if digest(arguments.warm_start / "download.json") != config["warm_start_manifest_sha256"]:
@@ -264,17 +264,26 @@ def run(arguments):
         gate = json.loads((root / "reports" / "preflight.json").read_text())
         if not gate["passed"] or gate["world"] != dist.get_world_size():
             raise ValueError("Matching full-model preflight required")
-        if arguments.resume:
-            state = restore(arguments.resume, model, optimizer, config)
+        continuation = arguments.resume or arguments.migrate_from
+        if continuation:
+            restore_checkpoint = restore_migrated if arguments.migrate_from else restore
+            state = restore_checkpoint(continuation, model, optimizer, config)
             if context.rank == 0:
                 sampler.close()
-                sampler = Sampler.restore(panels, arguments.resume / "sampler.sqlite", ledger.with_name(uuid.uuid4().hex + ".sqlite"), model_config.seed)
+                sampler = Sampler.restore(panels, continuation / "sampler.sqlite", ledger.with_name(uuid.uuid4().hex + ".sqlite"), model_config.seed)
                 if sampler.issued != state["scheduled"]:
                     raise ValueError("Sampler count differs from completed sample count")
                 with (root / "restarts.jsonl").open("a") as stream:
-                    stream.write(json.dumps({"from": str(arguments.resume), "time": time.time(), "step": state["step"]}) + "\n")
+                    stream.write(json.dumps({"from": str(continuation), "time": time.time(), "step": state["step"],
+                                             "topology_migration": bool(arguments.migrate_from)}) + "\n")
+                if arguments.migrate_from:
+                    write_json(root / "reports" / "migration.json", {**config["migration"], **state})
+                    print(json.dumps({"event": "migration_restored", **state}), flush=True)
+            if arguments.migrate_from:
+                save(root, model, optimizer, state, sampler, config)
+                maintain_distributed(root, context)
         next_save = time.monotonic() + 1800
-        last_saved = state["step"] if arguments.resume else -1
+        last_saved = state["step"] if continuation else -1
         worst_update = gate["worst_microbatch_seconds"] * math.ceil(320 / context.dp_size) * 1.5
         while True:
             stopping = torch.tensor(int(STOP or (root / "control" / "STOP").exists()
@@ -359,6 +368,8 @@ if __name__ == "__main__":
     parser.add_argument("--backup", type=Path, required=True)
     parser.add_argument("--gate", action="store_true")
     parser.add_argument("--stop-at", type=float, default=0)
-    parser.add_argument("--resume", type=Path)
+    continuation = parser.add_mutually_exclusive_group()
+    continuation.add_argument("--resume", type=Path)
+    continuation.add_argument("--migrate-from", type=Path)
     parser.add_argument("--warm-start", type=Path)
     run(parser.parse_args())

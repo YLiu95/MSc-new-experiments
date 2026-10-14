@@ -49,6 +49,55 @@ def export_checkpoint(root, checkpoint, name):
     write_json(root / "exports" / f"{name}.json", {"directory": destination.name})
 
 
+def finish_migration(root, latest, copied):
+    config = json.loads((latest / "config.json").read_text())
+    migration = config.get("migration")
+    receipt = root / "reports" / "migration_retired.json"
+    if not migration or receipt.exists():
+        return
+    parent = Path(migration["parent_checkpoint"]).resolve()
+    parent.relative_to((root.parent / "job-285983.hunter-pbs01" / "checkpoints").resolve())
+    state = json.loads((latest / "state.json").read_text())
+    if (state["world"] != 24 or state["step"] < migration["parent_step"]
+            or state["scheduled"] < migration["parent_scheduled"]
+            or digest(latest / "manifest.json") != digest(copied / "manifest.json")):
+        raise ValueError("Verified migrated recovery is required before retiring the parent")
+    if not parent.exists():
+        write_json(receipt, {"parent_already_absent": True, "replacement": latest.name})
+        return
+    verify(parent, ("config.json", "state.json", "sampler.sqlite"))
+    if digest(parent / "manifest.json") != migration["parent_manifest_sha256"]:
+        raise ValueError("Parent checkpoint changed before migration retirement")
+    parent_root = parent.parents[1]
+    finished = json.loads((parent_root / "TRAINING_DONE.json").read_text())
+    if finished["step"] != migration["parent_step"] or finished["scheduled"] != migration["parent_scheduled"]:
+        raise ValueError("Parent training must finish before migration retirement")
+    best_pointer = parent_root / "exports" / "best.json"
+    if best_pointer.exists() and not (root / "best.json").exists():
+        best = parent_root / "exports" / json.loads(best_pointer.read_text())["directory"]
+        best.resolve().relative_to((parent_root / "exports").resolve())
+        verify(best, workers=4)
+        destination = root / "exports" / (best.name + "-parent")
+        if not destination.exists():
+            shutil.copytree(best, destination, copy_function=os.link)
+        verify(destination, workers=4)
+        write_json(root / "exports" / "best.json", {"directory": destination.name})
+    evidence = parent_root / "reports" / "migration-source"
+    evidence.mkdir(parents=True, exist_ok=True)
+    for name in ("config.json", "state.json", "manifest.json", "COMPLETE"):
+        shutil.copy2(parent / name, evidence / name)
+    shutil.rmtree(parent)
+    if (parent_root / "exports").exists():
+        shutil.rmtree(parent_root / "exports")
+    report = {"parent_manifest_sha256": migration["parent_manifest_sha256"],
+              "replacement_job": root.name, "replacement": latest.name, "verified": True,
+              "optimizer_preserved": True, "sampler_preserved": True, "rng_reseeded": True}
+    write_json(parent_root / "reports" / "migrated_to.json", report)
+    write_json(receipt, report)
+    os.utime(root, None)
+    print(json.dumps({"event": "migration_parent_retired", **report}), flush=True)
+
+
 def maintain(root):
     started = time.monotonic()
     latest = root / json.loads((root / "latest.json").read_text())["directory"]
@@ -78,6 +127,7 @@ def maintain(root):
     write_json(root / "reports" / "private_backup.json", {
         "verified": True, "checkpoint": latest.name, "manifest_sha256": digest(copied / "manifest.json"),
         "independent_failure_domain": False, "seconds": elapsed, "verified_epoch": time.time()})
+    finish_migration(root, latest, copied)
     print(json.dumps({"event": "offline_backup_complete", "checkpoint": latest.name, "seconds": elapsed}), flush=True)
     return elapsed
 

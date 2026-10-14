@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$HUNTER_WORKSPACE/source"
+cd "${HUNTER_SOURCE:-$HUNTER_WORKSPACE/source}"
 source ./env.sh
 node_rank="${PMI_RANK:?MPI launcher rank is required}"
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1

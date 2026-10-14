@@ -1,4 +1,5 @@
 import json
+import shutil
 from types import SimpleNamespace
 
 import pytest
@@ -33,6 +34,51 @@ def checkpoint(root, step, best=False):
     if best:
         write_json(root / "best.json", pointer)
     return destination
+
+
+def reseal(directory):
+    write_json(directory / "manifest.json", {path.name: {"bytes": path.stat().st_size, "sha256": digest(path)}
+                                             for path in directory.iterdir()
+                                             if path.name not in ("manifest.json", "COMPLETE")})
+    (directory / "COMPLETE").write_text(digest(directory / "manifest.json") + "\n")
+
+
+@pytest.mark.parametrize("finished", [False, True])
+def test_migration_retirement_preserves_replacement_and_parent_best(tmp_path, monkeypatch, finished):
+    parent_root = tmp_path / "artifacts" / "job-285983.hunter-pbs01"
+    root = tmp_path / "artifacts" / "job-six"
+    backups = tmp_path / "backups"
+    monkeypatch.setenv("BACKUP_ROOT", str(backups))
+    checkpoint(parent_root, 180, best=True)
+    maintain(parent_root)
+    parent = checkpoint(parent_root, 185)
+    write_json(parent / "state.json", {"step": 185, "scheduled": 10240, "world": 8})
+    reseal(parent)
+    maintain(parent_root)
+    shutil.rmtree(backups / parent_root.name)
+    if finished:
+        write_json(parent_root / "TRAINING_DONE.json", {"step": 185, "scheduled": 10240, "world": 8})
+    latest = checkpoint(root, 185)
+    write_json(latest / "config.json", {"tp": 4, "migration": {
+        "parent_checkpoint": str(parent), "parent_step": 185, "parent_scheduled": 10240,
+        "parent_manifest_sha256": digest(parent / "manifest.json")}})
+    write_json(latest / "state.json", {"step": 185, "scheduled": 10240, "world": 24})
+    reseal(latest)
+    if not finished:
+        with pytest.raises(FileNotFoundError):
+            maintain(root)
+        assert parent.exists()
+        return
+    maintain(root)
+    assert not parent.exists()
+    assert not (parent_root / "exports").exists()
+    assert verify(latest) == verify(backups / root.name / latest.name)
+    best = root / "exports" / json.loads((root / "exports" / "best.json").read_text())["directory"]
+    assert (best / "weights-00.safetensors").read_bytes() == b"180:0"
+    assert (parent_root / "reports" / "migration-source" / "manifest.json").exists()
+    assert (root / "reports" / "migration_retired.json").exists()
+    maintain(root)
+    assert best.exists()
 
 
 def test_retention_preserves_best_export_and_verified_latest_recovery(tmp_path, monkeypatch):
