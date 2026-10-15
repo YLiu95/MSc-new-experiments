@@ -23,7 +23,7 @@ from ranker.sampler import Sampler
 from ranker.train import optimizer_for
 from ranking17.model import ModelConfig, RankingModel
 from ranking17.offline import export_checkpoint
-from ranking17.recovery import digest, save, verify
+from ranking17.recovery import digest, restore, save, verify
 from ranking17.train import batch_for, memory_record, update, validate
 
 
@@ -35,14 +35,84 @@ def request_stop(signum, frame):
     STOP = True
 
 
-def next_action(now, checkpoint_at, validation_at, end_at, final_saved, validation_seconds=120, unsaved=True):
+def next_action(now, validation_at, end_at, final_saved, validation_seconds=120, unsaved=True):
     if not unsaved:
         return "update"
+    if not final_saved and now >= end_at - 90:
+        return "save"
     if now >= validation_at and now + validation_seconds + 90 < end_at:
         return "validate"
-    if now >= checkpoint_at or (not final_saved and now >= end_at - 90):
-        return "save"
     return "update"
+
+
+def migration_state(previous, state, world):
+    if previous["tp"] != 1 or previous["dp"] != 4 or state["world"] != 4 or world != 8:
+        raise ValueError("Only the four-to-eight worker Experiment 1.9 migration is supported")
+    if state["step"] < 1 or state["scheduled"] != state["step"] * previous["global_batch"]:
+        raise ValueError("Checkpoint progress does not match completed training updates")
+    return {**state, "world": world, "migration_parent_world": 4,
+            "migration_parent_step": state["step"], "migration_rng_reseeded": True,
+            "migration_bitwise_continuation": False}
+
+
+def prepare_resume(root, directory, initial_config, end_at):
+    previous = json.loads((directory / "config.json").read_text())
+    if {key: value for key, value in previous.items() if key != "allocation_end_epoch"} != initial_config:
+        raise ValueError("Resume checkpoint differs from the verified initial training contract")
+    state = migration_state(previous, json.loads((directory / "state.json").read_text()), 8)
+    entry = {"directory": f"checkpoints/{directory.name}", "step": state["step"]}
+    for label in ("latest", "best"):
+        if json.loads((directory.parent.parent / f"{label}.json").read_text()) != entry:
+            raise ValueError(f"Resume source is not the verified {label} checkpoint")
+    verify(directory, workers=4)
+    config = {**previous, "dp": 8, "allocation_end_epoch": end_at, "optimizer_reset": False,
+              "sampler_reset": False, "possible_sample_reuse": False,
+              "migration": {"source": str(directory), "parent_manifest_sha256": digest(directory / "manifest.json"),
+                            "optimizer_preserved": True, "sampler_preserved": True,
+                            "rng_reseeded": True, "bitwise_continuation": False}}
+    if (root / "latest.json").exists():
+        raise ValueError("Resume destination already contains a checkpoint")
+    checkpoint = root / entry["directory"]
+    checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    stage = checkpoint.with_name(checkpoint.name + ".staging")
+    if checkpoint.exists() or stage.exists():
+        raise ValueError("Resume destination already contains a checkpoint or unfinished snapshot")
+    shutil.copytree(directory, stage)
+    verify(stage, workers=4)
+    stage.rename(checkpoint)
+    for label in ("latest", "best"):
+        write_json(root / f"{label}.json", entry)
+    write_json(root / "config.json", config)
+    write_json(root / "reports" / "migration.json", {**config["migration"], **state})
+    return config, state
+
+
+def prepare_restart(root, directory, initial_config, end_at, world):
+    directory = directory.resolve()
+    directory.relative_to((root / "checkpoints").resolve())
+    config = json.loads((directory / "config.json").read_text())
+    state = json.loads((directory / "state.json").read_text())
+    allowed = {"dp", "allocation_end_epoch", "optimizer_reset", "sampler_reset", "possible_sample_reuse", "migration"}
+    if {key: value for key, value in config.items() if key not in allowed} != {
+            key: value for key, value in initial_config.items() if key not in allowed}:
+        raise ValueError("Restart changes the initial training contract")
+    if world != 8 or config["tp"] != 1 or config["dp"] != world or state["world"] != world:
+        raise ValueError("Restart requires the same eight-worker topology")
+    if config["allocation_end_epoch"] != end_at or json.loads((root / "config.json").read_text()) != config:
+        raise ValueError("Restart changes the existing run or allocation deadline")
+    if state["step"] < 1 or state["scheduled"] != state["step"] * config["global_batch"]:
+        raise ValueError("Restart progress is inconsistent")
+    latest = json.loads((root / "latest.json").read_text())
+    if (root / latest["directory"]).resolve() != directory or latest["step"] != state["step"]:
+        raise ValueError("Restart must use the current latest checkpoint")
+    best = (root / json.loads((root / "best.json").read_text())["directory"]).resolve()
+    best.relative_to((root / "checkpoints").resolve())
+    for checkpoint_path in {directory, best}:
+        verify(checkpoint_path, workers=4)
+    required = {"recovery-00.pt", "sampler.sqlite"} | {f"rng-{rank:04d}.pt" for rank in range(world)}
+    if not required <= json.loads((directory / "manifest.json").read_text()).keys():
+        raise ValueError("Restart checkpoint lacks optimizer, sampler or per-rank RNG state")
+    return config, state
 
 
 def retain(root):
@@ -98,12 +168,13 @@ def main(arguments):
     os.sched_setaffinity(0, cpus)
     torch.set_num_threads(4)
     context = ParallelContext.initialize(1)
-    if context.dp_size != 4 or torch.cuda.device_count() != 4:
-        raise RuntimeError("Experiment 1.9 requires one full four-APU node")
+    expected_world = 8 if arguments.resume or arguments.restart else 4
+    if context.dp_size != expected_world or torch.cuda.device_count() != 4:
+        raise RuntimeError("Experiment 1.9 requires four workers on every allocated APU node")
     probe = torch.tensor(context.rank + 1, device=context.device)
     dist.all_reduce(probe)
-    if probe.item() != 10:
-        raise RuntimeError("Four-rank RCCL collective failed")
+    if probe.item() != expected_world * (expected_world + 1) // 2:
+        raise RuntimeError("Distributed RCCL collective failed")
     torch.use_deterministic_algorithms(True)
     for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGUSR1):
         signal.signal(signum, request_stop)
@@ -148,30 +219,85 @@ def main(arguments):
     registry = json.loads((panel / "evaluation" / "val-primary.json").read_text())
     if digest(panel / "evaluation" / registry["file"]) != config["validation_sha256"]:
         raise ValueError("Parent monitoring registry changed")
-    sampler = Sampler(panels, root / "ledgers" / f"{uuid.uuid4().hex}.sqlite", model_config.seed) if context.rank == 0 else None
+    ledger = root / "ledgers" / f"{uuid.uuid4().hex}.sqlite"
+    sampler = None
     writer = SummaryWriter(str(root / "runs")) if context.rank == 0 else None
-    state = {"step": 0, "scheduled": 0, "best_metric": None, "world": 4, "warm_start_parent_step": 305}
-    config["allocation_end_epoch"] = arguments.end_at
-    if context.rank == 0:
-        write_json(root / "config.json", config)
-        write_json(root / "reports" / "preflight.json", {"passed": True, "world": 4, "tp": 1, "dp": 4,
-                   "parameters": model.parameter_count(), "worst_microbatch_seconds": gate_seconds,
-                   "synthetic_loss": gate_loss["loss"], "memory_phases": memory,
-                   "synthetic_update_rolled_back": True, "resume_bitwise_tested": False})
-        print(json.dumps({"event": "preflight_passed", "parameters": model.parameter_count(), "tp": 1, "dp": 4}), flush=True)
-    summary = validate(model, panels, panel, registry)
-    metric = summary["macro_spearman"]
-    if metric is None or not math.isfinite(metric):
-        raise RuntimeError("Initial monitoring validation is nonfinite")
-    state["best_metric"] = metric
-    if context.rank == 0:
-        with (root / "validation.jsonl").open("a") as stream:
-            stream.write(json.dumps({"step": 0, "monitoring_subset": True, **summary}) + "\n")
-        writer.add_scalar("validation/macro_spearman", metric, 0)
-        print(json.dumps({"event": "initial_validation", "step": 0, "macro_spearman": metric}), flush=True)
-    last_checkpoint = checkpoint(root, model, optimizer, state, sampler, config, best=True)
+    if arguments.resume or arguments.restart:
+        source_checkpoint = arguments.restart or arguments.resume
+        result = [None]
+        if context.rank == 0:
+            try:
+                prepared = (prepare_restart(root, source_checkpoint, config, arguments.end_at, expected_world)
+                            if arguments.restart else prepare_resume(root, source_checkpoint, config, arguments.end_at))
+                result[0] = {"prepared": prepared}
+            except Exception as error:
+                result[0] = {"error": str(error)}
+        dist.broadcast_object_list(result, src=0)
+        if "error" in result[0]:
+            raise RuntimeError(result[0]["error"])
+        config, state = result[0]["prepared"]
+        if arguments.restart:
+            recovered_state = restore(source_checkpoint, model, optimizer, config)
+            if recovered_state != state:
+                raise ValueError("Checkpoint state changed during restart")
+        else:
+            recovery = torch.load(source_checkpoint / "recovery-00.pt", map_location="cpu", weights_only=True)
+            model.load_state_dict(recovery["model"])
+            optimizer.load_state_dict(recovery["optimizer"])
+            del recovery
+            seed = model_config.seed + state["step"] * expected_world + context.dp_rank
+            torch.manual_seed(seed)
+            torch.cuda.manual_seed_all(seed)
+            np.random.seed(seed % 2**32)
+            random.seed(seed)
+        torch.cuda.empty_cache()
+        restore_status = [None]
+        if context.rank == 0:
+            try:
+                sampler = Sampler.restore(panels, source_checkpoint / "sampler.sqlite", ledger, model_config.seed)
+                if sampler.issued != state["scheduled"]:
+                    raise ValueError("Restored sampler does not match checkpoint progress")
+            except Exception as error:
+                restore_status[0] = str(error)
+        dist.broadcast_object_list(restore_status, src=0)
+        if restore_status[0] is not None:
+            raise RuntimeError(restore_status[0])
+        if context.rank == 0:
+            if arguments.restart:
+                report = {"event": "restart_restored", **state, "checkpoint": str(source_checkpoint),
+                          "source_sha256": digest(Path(__file__)), "checkpoint_policy": "validation_aligned",
+                          "validation_interval_seconds": 300, "pre_expiry_save_seconds": 90,
+                          "optimizer_preserved": True, "sampler_preserved": True, "per_rank_rng_restored": True,
+                          "bitwise_replay_tested": False, "time": time.time()}
+                write_json(root / "reports" / f"restart-{state['step']}.json", report)
+                print(json.dumps(report), flush=True)
+            else:
+                print(json.dumps({"event": "migration_restored", **state}), flush=True)
+        last_validation = time.time()
+    else:
+        sampler = Sampler(panels, ledger, model_config.seed) if context.rank == 0 else None
+        state = {"step": 0, "scheduled": 0, "best_metric": None, "world": 4, "warm_start_parent_step": 305}
+        config["allocation_end_epoch"] = arguments.end_at
+        if context.rank == 0:
+            write_json(root / "config.json", config)
+            write_json(root / "reports" / "preflight.json", {"passed": True, "world": 4, "tp": 1, "dp": 4,
+                       "parameters": model.parameter_count(), "worst_microbatch_seconds": gate_seconds,
+                       "synthetic_loss": gate_loss["loss"], "memory_phases": memory,
+                       "synthetic_update_rolled_back": True, "resume_bitwise_tested": False})
+            print(json.dumps({"event": "preflight_passed", "parameters": model.parameter_count(), "tp": 1, "dp": 4}), flush=True)
+        summary = validate(model, panels, panel, registry)
+        metric = summary["macro_spearman"]
+        if metric is None or not math.isfinite(metric):
+            raise RuntimeError("Initial monitoring validation is nonfinite")
+        state["best_metric"] = metric
+        if context.rank == 0:
+            with (root / "validation.jsonl").open("a") as stream:
+                stream.write(json.dumps({"step": 0, "monitoring_subset": True, **summary}) + "\n")
+            writer.add_scalar("validation/macro_spearman", metric, 0)
+            print(json.dumps({"event": "initial_validation", "step": 0, "macro_spearman": metric}), flush=True)
+        checkpoint(root, model, optimizer, state, sampler, config, best=True)
+        last_validation = time.time()
     saved_step = state["step"]
-    last_validation = time.time()
     validation_seconds = 120.0
     final_saved = False
     while True:
@@ -180,7 +306,7 @@ def main(arguments):
         decision = [None]
         if context.rank == 0:
             decision[0] = "stop" if stopping.item() else next_action(
-                time.time(), last_checkpoint + 120, last_validation + 300,
+                time.time(), last_validation + 300,
                 arguments.end_at, final_saved, validation_seconds, state["step"] != saved_step)
         dist.broadcast_object_list(decision, src=0)
         action = decision[0]
@@ -242,4 +368,7 @@ if __name__ == "__main__":
     parser.add_argument("--panel", type=Path, required=True)
     parser.add_argument("--initial", type=Path, required=True)
     parser.add_argument("--end-at", type=float, required=True)
+    source_options = parser.add_mutually_exclusive_group()
+    source_options.add_argument("--resume", type=Path)
+    source_options.add_argument("--restart", type=Path)
     main(parser.parse_args())
