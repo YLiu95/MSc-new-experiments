@@ -282,6 +282,36 @@ def test_cloud_cleanup_rejects_path_escape(tmp_path):
             safe_path(tmp_path, relative)
 
 
+def test_cloud_cleanup_requires_private_backup_before_removing_recovery(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import pytest
+    import cloud_cleanup
+    root = tmp_path / "cache"
+    root.mkdir()
+    path = root / "recovery-00.pt"
+    size = 100 * 1024**2
+    with path.open("wb") as stream:
+        stream.truncate(size)
+    checksum = cloud_cleanup.sha256(path)
+    receipt = {"repository": "owner/recovery", "commit": "a" * 40, "verified": True, "private": True,
+               "files": {path.name: {"bytes": size, "digest": checksum}}}
+    receipt_path = root / "recovery-publication.json"
+    receipt_path.write_text(json.dumps(receipt))
+    info = SimpleNamespace(private=False, siblings=[SimpleNamespace(
+        rfilename=path.name, size=size, lfs=SimpleNamespace(sha256=checksum))])
+    api = SimpleNamespace(repo_info=lambda *args, **kwargs: info)
+    monkeypatch.setattr(cloud_cleanup, "SOURCES", (("cache/recovery-publication.json", "owner/recovery", "model"),))
+    audit = tmp_path / "audit.jsonl"
+    with pytest.raises(ValueError, match="private cloud backup"):
+        cloud_cleanup.cleanup(tmp_path, api, audit, delete=True)
+    assert path.exists() and not audit.exists()
+    info.private = True
+    cloud_cleanup.cleanup(tmp_path, api, audit, delete=True)
+    assert not path.exists() and receipt_path.exists()
+    events = [json.loads(line) for line in audit.read_text().splitlines()]
+    assert [event["event"] for event in events] == ["verified_plan", "verified", "deleted", "complete"]
+
+
 def test_cloud_cleanup_supports_legacy_count_receipt():
     from types import SimpleNamespace
     import pytest

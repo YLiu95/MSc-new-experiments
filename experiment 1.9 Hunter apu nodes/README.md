@@ -194,3 +194,22 @@ including FP32 model/Adam, per-rank RNG, sampler and integrity manifests. It
 requires a finished allocation, refuses a public destination, and verifies
 every uploaded file before writing `recovery-publication.json`. Public
 publication rejects private recovery snapshots. Hunter originals are retained.
+
+## Verified Final Backups And Cleanup
+
+The final public model backup verified 25 files at Hugging Face commit
+`d42578c59250b799908573bd0a2e6448078b926c`. The private recovery backup verified
+all 37 files (29,953,224,179 bytes), including complete best 328 and latest
+2172 recovery, at commit `7a17855a414de2241469c1e3fd78f5bf351a69dc` in
+`YL95/experiment-1.9-hunter-recovery`. TensorBoard contains 2,117 continuation
+updates through step 2183. Receipts are in `publication/final-286615/` and
+`publication/recovery-286615/`; private recovery is not publicly accessible.
+
+After fresh pinned-cloud checks and local SHA-256 verification, Windows
+cleanup removed eight large cache files. Actual free space increased by
+29.88 GiB to 73.66 GiB; logical unlinked size was 35.85 GiB because some
+weights shared hardlinks. The audit is
+`publication/cleanup-final-20261015.jsonl`. Source, environments, reports,
+receipts, smaller metadata, and every Hunter/cloud file were preserved.
+The Hunter login node rebooted after all checkpoint downloads completed;
+the remaining cloud upload finished independently and was verified.

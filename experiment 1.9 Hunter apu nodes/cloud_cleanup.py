@@ -16,6 +16,9 @@ SOURCES = (
     ("experiment 1.7.1/staging/warmstart/download.json", "YL95/experiment-1.7-asc-gpu-nodes", "model"),
     ("experiment 1.7.1/staging/dataset/download.json", "YL95/new_experiment_1-data", "dataset"),
     ("experiment 1.9/publication/publication.json", "YL95/experiment-1.9-hunter-apu-nodes", "model"),
+    ("experiment 1.9/publication/resume-286615/publication.json", "YL95/experiment-1.9-hunter-apu-nodes", "model"),
+    ("experiment 1.9/publication/final-286615/publication.json", "YL95/experiment-1.9-hunter-apu-nodes", "model"),
+    ("experiment 1.9/publication/recovery-286615/recovery-publication.json", "YL95/experiment-1.9-hunter-recovery", "model"),
 )
 
 
@@ -73,17 +76,23 @@ def cleanup(workspace, api, audit, delete=False):
         receipt = json.loads(receipt_path.read_text())
         if receipt["repository"] != repository:
             raise ValueError("Unexpected repository in cleanup receipt")
-        if receipt_path.name == "publication.json" and (not receipt.get("verified") or receipt.get("metrics_only")):
+        is_recovery = receipt_path.name == "recovery-publication.json"
+        if receipt_path.name in {"publication.json", "recovery-publication.json"} and (
+            not receipt.get("verified") or receipt.get("metrics_only")):
             raise ValueError("Publication is not fully verified")
         revision = receipt.get("revision", receipt.get("commit"))
         if not re.fullmatch(r"[0-9a-f]{40}", revision or ""):
             raise ValueError("Cleanup requires an immutable cloud revision")
         info = api.repo_info(repository, repo_type=repo_type, revision=revision, files_metadata=True)
+        if is_recovery and (receipt.get("private") is not True or info.private is not True):
+            raise ValueError("Recovery cleanup requires a verified private cloud backup")
         remote = {entry.rfilename: entry for entry in info.siblings}
         for name, metadata in receipt_files(receipt, remote).items():
             candidate = (receipt_path.parent.relative_to(workspace) / name).as_posix()
             path = safe_path(workspace, candidate)
-            if metadata["bytes"] < 100 * 1024**2 or path.suffix not in {".safetensors", ".parquet"} or not path.exists():
+            allowed = path.suffix in {".safetensors", ".parquet"} or (
+                is_recovery and path.name in {"recovery-00.pt", "sampler.sqlite"})
+            if metadata["bytes"] < 100 * 1024**2 or not allowed or not path.exists():
                 continue
             print(json.dumps({"event": "verify_cloud_and_local", "path": candidate, "bytes": metadata["bytes"]}), flush=True)
             entry = verify_candidate(workspace, candidate, metadata, remote[name])
