@@ -1,5 +1,51 @@
 # Hunter Port Status
 
+## Final Results Checked on 2026-10-15
+
+This section supersedes the pending-run status in the historical deployment
+record below. Six-node job `286067.hunter-pbs01` started at 00:14:39 CEST and
+ended unsuccessfully at 07:13:35 CEST, with PBS exit status 127 and reported
+resource walltime 06:57:41. No `TRAINING_DONE.json` exists for this job.
+
+The full 24-worker preflight passed: checkpoint save 148.342005148 seconds,
+verified backup 178.938181509 seconds (327.280186657 combined), peak reserved
+memory 46.076171875 GiB, bitwise next-update replay and sampler replay true.
+Migration from step 192 succeeded, preserving FP32 weights, Adam, sampler and
+scheduled count while reseeding RNG as approved. The new baseline and backup
+were verified before the old parent recovery files were retired.
+
+Training logged 218 completed updates, steps 193 through 410, adding 69,760
+scheduled samples and reaching 82,240 since the Hunter warm start. The last
+loss was 0.6902306942269206 and learning rate 0.000082. Update-only throughput
+averaged 10.524276935052752 samples/second, excluding preflight, validation and
+checkpoint overhead. Maximum reserved GPU memory was 59.623046875 GiB.
+
+There were 33 monitoring-subset validation records. Best Spearman was
+0.08394159463901718 at step 305; the last was 0.06689862950127207 at step 355.
+No full-validation or held-out-test result is claimed. Best inference weights
+are retained at step 305 (48,640 scheduled samples). Latest inference and full
+recovery are step 355 (64,640 scheduled samples). The 55 updates and 17,600
+scheduled samples after step 355 have logs but no complete saved checkpoint.
+
+The first observed error was rank 4, then rank 8, failing to save RNG state
+because `step_00000410_000000082240.staging` did not exist. The traceback enters
+the timed checkpoint branch in `ranking17/train.py` and `ranking17/recovery.py`.
+Independent rank-local timing decisions are a suspected coordination defect;
+the root cause is not proven and no training-code fix or restart was performed.
+
+The latest recovery and same-filesystem backup have identical 35-file manifests,
+with 142,770,222,377 payload bytes and manifest SHA256
+`2215625785a655c79e6669d391742005f24896295fcb0db286aa34c3d2fda57f`.
+Their completion-marker hashes, file existence and sizes passed inspection,
+as did all six best-export files. This inspection did not rehash the full
+recovery payloads; the recorded full backup verification had passed previously.
+Public backups exclude FP32 recovery/Adam, RNG, sampler and private data.
+The Hunter recovery copies share a temporary filesystem and are not permanent
+off-site recovery backups. Account expiry could not be determined from the
+ordinary login account; workspace lifetime and PBS deadlines are separate.
+
+## Historical Deployment Record
+
 Verified deployment status on 2026-10-14:
 
 - Hunter access and a 30-day Lustre workspace are established.

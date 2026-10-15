@@ -13,6 +13,31 @@ inference requires all four weight shards and the published model configuration.
 FP32 training weights/Adam state, BF16 compute, original dropout semantics,
 global batch 320 and microbatch 1.
 
+## Final Observed Results (2026-10-15)
+
+Six-node job `286067.hunter-pbs01` passed its 24-worker recovery preflight and
+restored the step-192 parent with Adam and sampler progress preserved. It
+completed 218 updates, steps 193 through 410, then failed during checkpointing
+at 07:13:35 CEST with PBS exit status 127. There is no clean-completion record.
+
+| Published export | Step | Monitoring Spearman | Scheduled samples |
+| --- | --- | --- | --- |
+| `best/` | 305 | 0.08394159463901718 | 48,640 |
+| `latest/` | 355 | 0.06689862950127207 | 64,640 |
+
+These scores use the monitoring subset, not full validation or a held-out test.
+The final logged update was step 410 (loss 0.6902306942269206), but its weights
+were not saved: 55 updates and 17,600 scheduled samples after step 355 are not
+recoverable from the retained checkpoint. No step-410 weights are published.
+
+Full FP32/Adam/RNG/sampler recovery at step 355 and its verified second copy
+remain on Hunter's temporary workspace, not in this public repository. The
+published exports are inference-only and cannot provide exact training resume.
+The step-410 error reports a missing checkpoint staging directory; rank-local
+checkpoint timing is a suspected cause, not a confirmed diagnosis or a fix.
+
+## Provenance and Limitations
+
 Initialization uses Experiment 1.7 latest step 153 at source revision
 `ecf683c5cfd3f49c9fbf2ce5e53f2f637dfce9b9`. Source matrices were BF16 inference
 exports. Adam, RNG and sampler reset were explicitly approved; this is not an
