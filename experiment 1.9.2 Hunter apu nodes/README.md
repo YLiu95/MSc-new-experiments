@@ -74,3 +74,31 @@ Hosted view: https://huggingface.co/YL95/experiment-1.9.2-hunter-apu-nodes/tenso
 The VS Code task `Experiment 1.9.2 TensorBoard :16006` serves the local mirror.
 No VS Code Ports forwarding entry was created because the service is already local.
 The global experiment instructions now require this monitoring setup for future runs.
+
+## Allocation-Triggered Copilot
+
+`wake192.py watch` checks the existing private publication endpoint every 15 seconds.
+Running state, a reported watcher failure, or a heartbeat older than three minutes
+submits one new VS Code agent request through the supported `code chat --mode agent`
+CLI. This is an actual prompt submission, not just a terminal completion notification.
+
+The handoff contains the job identity, existing control-terminal ID and verification
+requirements. It asks the agent to diagnose failures and continue until both hardware
+gates and initial checkpoints are verified and both arms complete three real updates.
+It prohibits duplicate training, allocation replacement, credential collection and
+interruption of healthy workers, backups or the original allocation shell.
+
+A persistent `dispatch.lock` prevents duplicate agent requests. The new agent must
+write an acknowledgement matching the request UUID. State and evidence are stored in
+`publication/wakeup/{watch-status.json,wake-status.json,agent-started.json}`.
+An uncertain submission is reported rather than automatically duplicated.
+
+A real harmless CLI probe successfully received acknowledgement for request
+`c6cd13ca-8dc5-4870-ab3b-01d45fb4d4e3`; it only created its acknowledgement file and
+did not access Hunter. Evidence is in `publication/wakeup-probe/`.
+
+This starts a new agent request, not necessarily this same conversation. Keep this
+workspace in VS Code, the Windows session awake, Copilot signed in, and the watcher,
+VPN and SSH tunnel available. Existing tool approvals and authentication requirements
+still apply; no approval or security setting is disabled. Wake-up does not guarantee
+that every possible training failure can be repaired unattended.

@@ -251,3 +251,77 @@ def test_allocation_notification_rejects_stale_heartbeat(monkeypatch):
     monkeypatch.setattr(publish192.time, "time", lambda: 281)
     with pytest.raises(RuntimeError, match="heartbeat"):
         publish192.notify("http://local")
+
+
+def test_copilot_wakeup_dispatches_agent_once(tmp_path, monkeypatch):
+    import wake192
+    from unittest.mock import Mock
+    completed = Mock(returncode=0, stdout="", stderr="")
+    run = Mock(return_value=completed)
+    monkeypatch.setattr(wake192.subprocess, "run", run)
+    status = {"job": wake192.JOB, "experiment": "1.9.2", "state": "R"}
+    request_id = wake192.dispatch(tmp_path, "code.cmd", status)
+    assert request_id
+    command = run.call_args.args[0]
+    assert command[:6] == ["code.cmd", "chat", "--mode", "agent", "--reuse-window", "--add-file"]
+    assert run.call_args.kwargs["cwd"] == wake192.WORKSPACE
+    assert "Never submit, delete or replace an allocation" in command[-1]
+    assert wake192.dispatch(tmp_path, "code.cmd", status) is None
+    assert run.call_count == 1
+
+
+def test_copilot_wakeup_rejects_queued_or_wrong_job(tmp_path):
+    import wake192
+    with pytest.raises(ValueError, match="No allocation"):
+        wake192.dispatch(tmp_path, "code.cmd", {"job": wake192.JOB, "experiment": "1.9.2", "state": "Q"})
+    with pytest.raises(ValueError, match="Wrong experiment"):
+        wake192.dispatch(tmp_path, "code.cmd", {"job": "other", "experiment": "1.9.2", "state": "R"})
+    assert not (tmp_path / "dispatch.lock").exists()
+
+
+def test_copilot_wakeup_requires_matching_acknowledgement(tmp_path, monkeypatch):
+    import json
+    import wake192
+    from unittest.mock import Mock
+    monkeypatch.setattr(wake192.subprocess, "run", Mock(return_value=Mock(returncode=0, stdout="", stderr="")))
+    request_id = wake192.dispatch(tmp_path, "code.cmd", {"job": wake192.JOB, "experiment": "1.9.2", "state": "Q"}, probe=True)
+    wake192.write_record(tmp_path / "agent-started.json", {"job": wake192.JOB, "request_id": request_id, "status": "agent_started"})
+    wake192.wait_for_acknowledgement(tmp_path, request_id)
+    assert json.loads((tmp_path / "wake-status.json").read_text())["state"] == "acknowledged"
+
+
+def test_copilot_wakeup_waits_for_allocation_then_hands_off(tmp_path, monkeypatch):
+    import wake192
+    from unittest.mock import Mock
+    replies = []
+    for state in ("Q", "R"):
+        response = Mock()
+        response.json.return_value = {"job": wake192.JOB, "experiment": "1.9.2", "state": state, "time": 100}
+        replies.append(response)
+    monkeypatch.setattr(wake192.requests, "get", Mock(side_effect=replies))
+    monkeypatch.setattr(wake192.time, "time", lambda: 100)
+    waits = []
+    monkeypatch.setattr(wake192.threading.Event, "wait", lambda self, duration: waits.append(duration))
+    dispatch = Mock(return_value="request")
+    acknowledge = Mock()
+    monkeypatch.setattr(wake192, "dispatch", dispatch)
+    monkeypatch.setattr(wake192, "wait_for_acknowledgement", acknowledge)
+    wake192.watch(tmp_path, "code.cmd", "http://local")
+    assert waits == [15] and dispatch.call_count == 1
+    assert dispatch.call_args.args[2]["state"] == "R"
+    acknowledge.assert_called_once_with(tmp_path, "request")
+    assert not (tmp_path / "watch.lock").exists()
+
+
+def test_copilot_wakeup_hands_off_stale_controller(tmp_path, monkeypatch):
+    import wake192
+    from unittest.mock import Mock
+    response = Mock()
+    response.json.return_value = {"job": wake192.JOB, "experiment": "1.9.2", "state": "Q", "time": 100}
+    monkeypatch.setattr(wake192.requests, "get", Mock(return_value=response))
+    monkeypatch.setattr(wake192.time, "time", lambda: 281)
+    dispatch = Mock(return_value="request")
+    monkeypatch.setattr(wake192, "dispatch", dispatch)
+    monkeypatch.setattr(wake192, "wait_for_acknowledgement", Mock())
+    wake192.watch(tmp_path, "code.cmd", "http://local")
+    assert "heartbeat" in dispatch.call_args.args[2]["failure"]["reason"]
