@@ -49,6 +49,17 @@ def evaluate_cohort(model, panels, items, tasks, identity_masked=True):
     return status[0], combined
 
 
+def final_ready(root):
+    return all((root / f"arm-{arm}/TRAINING_DONE.json").is_file() and
+               selection_complete(json.loads((root / f"arm-{arm}/TRAINING_DONE.json").read_text()))
+               for arm in ("A", "B"))
+
+
+def selection_complete(done):
+    return (done.get("checkpoint_complete") and done.get("selection_frozen") and
+            done.get("reason") in ("early_stop", "update_budget"))
+
+
 def require_final_selection(root, final_evaluation, protocol):
     if not final_evaluation:
         raise ValueError("Final test is sealed; explicit --final-evaluation is required")
@@ -58,7 +69,7 @@ def require_final_selection(root, final_evaluation, protocol):
     for arm in ("A", "B"):
         arm_root = root / f"arm-{arm}"
         done = json.loads((arm_root / "TRAINING_DONE.json").read_text())
-        if not done.get("checkpoint_complete"):
+        if not selection_complete(done):
             raise ValueError("Both arms must finish and freeze selection first")
         pointer = json.loads((arm_root / "best.json").read_text())
         directory = (arm_root / pointer["directory"]).resolve()

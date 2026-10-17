@@ -1,3 +1,4 @@
+from functools import lru_cache
 import math
 from pathlib import Path
 import shutil
@@ -5,7 +6,7 @@ import sqlite3
 
 import numpy as np
 
-from ranker.contract import LENGTHS
+from ranker.contract import LENGTHS, Task
 from ranker.data import MarketPanel
 from ranker.sampler import Assignment, Sampler, coefficients, stratum_id, unrank
 from policy192 import market_probabilities
@@ -53,6 +54,8 @@ class Sampler192(Sampler):
     def __init__(self, panels, originals, path, arm, weights, seed=1337, fixed=None):
         self.originals, self.arm, self.weights = originals, arm, weights
         super().__init__(panels, path, seed, fixed=fixed)
+        self.training_cutoffs = lru_cache(maxsize=512)(
+            lambda market, task_key: self.panels[market].cutoffs(Task(*task_key), "train"))
         self.connection.execute("CREATE TABLE IF NOT EXISTS parent_counters (stratum INTEGER PRIMARY KEY, next_counter TEXT NOT NULL)")
         self.connection.execute("CREATE TABLE IF NOT EXISTS exposure (market INTEGER PRIMARY KEY, baskets INTEGER, scheduled_stock_days INTEGER, observed_label_stock_days INTEGER)")
         if any(not np.array_equal(panel.dates, original.dates) for panel, original in zip(panels, originals)):
@@ -89,7 +92,7 @@ class Sampler192(Sampler):
         for _ in range(128):
             market = int(generator.choice(possible) if probabilities is None else generator.choice(possible, p=probabilities))
             panel = self.panels[market]
-            cutoff = int(generator.choice(panel.cutoffs(task, "train")))
+            cutoff = int(generator.choice(self.training_cutoffs(market, task.key)))
             eligible = panel.eligible(cutoff, task.length)
             total = math.comb(len(eligible), task.basket)
             key = stratum_id(market, cutoff, task)

@@ -1,6 +1,7 @@
 import argparse
 import json
 import math
+import os
 from pathlib import Path
 import sqlite3
 import time
@@ -10,7 +11,8 @@ import numpy as np
 from ranker.contract import LENGTHS, MARKETS
 from ranker.data import MarketPanel, write_json
 from ranker.sampler import coefficients, unrank
-from ranking17.recovery import digest
+from ranking17.recovery import digest, verify
+from sampler192 import FilteredPanel, parent_used
 
 
 def universe(panel_root, output):
@@ -31,54 +33,74 @@ def universe(panel_root, output):
     print(json.dumps({"event": "universe_audit_complete", **report}), flush=True)
 
 
+def ledger_baskets(ledger, panel, original, seed, market_index, filtered=False):
+    for key, text in ledger.execute("SELECT stratum, next_counter FROM counters WHERE stratum>=? AND stratum<?",
+                                   (market_index << 36, (market_index + 1) << 36)):
+        cutoff = (key >> 20) & 65535
+        length, horizon, basket = LENGTHS[(key >> 14) & 63], ((key >> 7) & 127) + 1, (key & 127) + 3
+        eligible = panel.eligible(cutoff, length)
+        total, count = math.comb(len(eligible), basket), int(text)
+        if count > total:
+            raise ValueError("Ledger exceeds the combination universe")
+        previous = ledger.execute("SELECT next_counter FROM parent_counters WHERE stratum=?", (key,)).fetchone() if filtered else None
+        previous = int(previous[0]) if previous else 0
+        original_eligible = original.eligible(cutoff, length) if previous else None
+        multiplier, offset = coefficients(seed, key, total)
+        for index in range(count):
+            tickers = eligible[list(unrank(len(eligible), basket, (multiplier * index + offset) % total if total > 1 else 0))]
+            if previous and parent_used(original_eligible, tickers, key, previous, seed):
+                continue
+            yield tickers, cutoff, horizon, basket
+
+
 def exposure(workspace, panel_root, output):
     candidates = {"1.7.1": workspace / "artifacts/job-286067.hunter-pbs01",
                   "1.9": workspace / "experiment19/artifacts/job-286615.hunter-pbs01",
                   "1.9.1": workspace / "experiment191/artifacts/job-287139.hunter-pbs01"}
-    report = {"scope": "Cumulative basket counter ledgers at retained latest checkpoints; not additive across inherited lineages.",
+    resume_root = Path(os.environ.get("RESUME192_ROOT", workspace / "experiment192/artifacts/job-287990.hunter-pbs01"))
+    candidates.update({f"1.9.2-{arm}-new-updates": resume_root / f"arm-{arm}" for arm in ("A", "B")})
+    report = {"scope": "Retained checkpoint ledgers only; historical lineages are not additive. 1.9.2 counters describe child updates only, excluding parent baskets.",
               "1.7": {"status": "unavailable", "reason": "No verified original 1.7 ledger available in this workspace."},
               "experiments": {}, "complete": False}
     for experiment, root in candidates.items():
-        pointer = root / "latest.json"
-        if not pointer.is_file():
-            report["experiments"][experiment] = {"status": "unavailable", "reason": "No verified latest pointer"}
+        checkpoint, selected = None, None
+        for label in ("latest", "best"):
+            pointer = root / f"{label}.json"
+            if not pointer.is_file():
+                continue
+            candidate = (root / json.loads(pointer.read_text())["directory"]).resolve()
+            candidate.relative_to((root / "checkpoints").resolve())
+            if (candidate / "COMPLETE").is_file():
+                checkpoint, selected = candidate, label
+                break
+        if checkpoint is None:
+            report["experiments"][experiment] = {"status": "unavailable", "reason": "Historical checkpoint pruned; no verified retained ledger. No exposure estimate inferred."}
             continue
-        checkpoint = (root / json.loads(pointer.read_text())["directory"]).resolve()
-        checkpoint.relative_to((root / "checkpoints").resolve())
         ledger_path = checkpoint / "sampler.sqlite"
-        manifest = json.loads((checkpoint / "manifest.json").read_text())
-        if digest(ledger_path) != manifest["sampler.sqlite"]["sha256"]:
-            raise ValueError("Exposure audit ledger digest mismatch")
+        verify(checkpoint, ("sampler.sqlite", "config.json", "state.json"))
         config = json.loads((checkpoint / "config.json").read_text())
-        summary = {"checkpoint": checkpoint.name, "sampler_sha256": digest(ledger_path), "markets": {},
+        filtered = config.get("experiment") == "1.9.2"
+        summary = {"checkpoint": checkpoint.name, "pointer": selected, "sampler_sha256": digest(ledger_path), "markets": {},
                    "interpretation": "Exact counter-ledger issued exposure; not proof of optimizer consumption if source progress is inconsistent.",
                    "state": json.loads((checkpoint / "state.json").read_text())}
         report["experiments"][experiment] = summary
         with sqlite3.connect(ledger_path.as_uri() + "?mode=ro&immutable=1", uri=True) as ledger:
             for market_index, market in enumerate(MARKETS):
                 panel = MarketPanel(panel_root, market)
+                sampling_panel = FilteredPanel(panel_root, market, workspace / "experiment192/prepared") if filtered else panel
                 stocks, dates = panel.raw.shape
                 unique = np.zeros((stocks, dates, 3), dtype=np.uint32)
                 differences = np.zeros((stocks, dates + 1), dtype=np.int32)
                 baskets, label_uses, observed_uses, total_days = 0, 0, 0, 0
-                for key, text in ledger.execute("SELECT stratum, next_counter FROM counters WHERE stratum>=? AND stratum<?",
-                                               (market_index << 36, (market_index + 1) << 36)):
-                    cutoff, length, horizon, basket = (key >> 20) & 65535, LENGTHS[(key >> 14) & 63], ((key >> 7) & 127) + 1, (key & 127) + 3
-                    eligible = panel.eligible(cutoff, length)
-                    total, count = math.comb(len(eligible), basket), int(text)
-                    if count > total:
-                        raise ValueError("Ledger exceeds the original combination universe")
-                    multiplier, offset = coefficients(config["model"]["seed"], key, total)
-                    for index in range(count):
-                        tickers = eligible[list(unrank(len(eligible), basket, (multiplier * index + offset) % total if total > 1 else 0))]
-                        baskets += 1
-                        label_uses += basket
-                        observed = tickers[panel.streaks[cutoff + horizon, tickers] >= horizon]
-                        observed_uses += len(observed)
-                        total_days += len(observed) * horizon
-                        unique[observed, cutoff, (horizon - 1) // 32] |= np.uint32(1 << ((horizon - 1) % 32))
-                        differences[observed, cutoff + 1] += 1
-                        differences[observed, cutoff + horizon + 1] -= 1
+                for tickers, cutoff, horizon, basket in ledger_baskets(ledger, sampling_panel, panel, config["model"]["seed"], market_index, filtered):
+                    baskets += 1
+                    label_uses += basket
+                    observed = tickers[panel.streaks[cutoff + horizon, tickers] >= horizon]
+                    observed_uses += len(observed)
+                    total_days += len(observed) * horizon
+                    unique[observed, cutoff, (horizon - 1) // 32] |= np.uint32(1 << ((horizon - 1) % 32))
+                    differences[observed, cutoff + 1] += 1
+                    differences[observed, cutoff + horizon + 1] -= 1
                 unique_labels, unique_days = 0, 0
                 lookup = np.array([value.bit_count() for value in range(256)], dtype=np.uint8)
                 for start in range(0, stocks, 128):
@@ -93,6 +115,7 @@ def exposure(workspace, panel_root, output):
                 print(json.dumps({"event": "exposure_market_complete", "experiment": experiment, "market": market,
                                   **summary["markets"][market]}), flush=True)
     report["complete"], report["finished_at"] = True, time.time()
+    report["historical_coverage_complete"] = all(value.get("status") != "unavailable" for value in report["experiments"].values())
     write_json(output / "exposure.json", report)
 
 

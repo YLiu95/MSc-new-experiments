@@ -1,13 +1,83 @@
 # Experiment 1.9.2
 
 Two identity-hidden continuations from the verified Experiment 1.9 step-328 full
-recovery. The current request is six nodes for 24 hours, in a native PBS batch job.
-Each arm receives three disjoint nodes and 12 GPU workers. Batch 1536 means 128
-baskets per worker and 64 two-basket accumulation microsteps. Arm B alone changes
+recovery. The six-node restart uses three disjoint nodes and 12 GPU workers per arm.
+Batch 1536 means 128 baskets per worker and 64 two-basket accumulation microsteps. Arm B alone changes
 market probabilities. `EXPERIMENT192_JOB` pins monitoring and publishing to the
 submitted job; batch workers receive this identity from `PBS_JOBID`.
 
-## Current Submission: 287977
+## Current Status and Checkpoint Cleanup
+
+Job `287990.hunter-pbs01` failed at update 300 because the Lustre group quota
+could not accommodate an atomic recovery save. Both latest complete recoveries
+are step 578, or 250 new updates; update 300 is not a resumable checkpoint.
+Training has not restarted. The separate six-node, 24-hour interactive request
+`287999.hunter-pbs01` was still queued at the final cleanup check on 2026-10-17.
+
+User-authorized cleanup removed 25 obsolete checkpoint, export and warm-start
+directories, reclaiming an additional **272.7 GiB** after the earlier 133 GiB
+duplicate removal. Group quota usage is **67,464,280 / 500,000,000 KiB**, leaving
+**412.5 GiB free**. These are quota measurements, not filesystem-wide capacity.
+
+The only remaining full checkpoint directories, relative to `HUNTER_WORKSPACE`, are:
+
+```text
+experiment19/artifacts/job-286615.hunter-pbs01/checkpoints/step_00000328_000000104960
+experiment192/artifacts/job-287990.hunter-pbs01/arm-A/checkpoints/step_00000578_000000488960
+experiment192/artifacts/job-287990.hunter-pbs01/arm-B/checkpoints/step_00000578_000000488960
+experiment192/artifacts/job-287990.hunter-pbs01/arm-B/checkpoints/step_00000328_000000104960
+```
+
+These retain the best 1B parent, both arms' latest FP32 model/Adam/RNG/sampler
+states, and Arm B's selected-best recovery required by resume and final selection.
+Arm A's best equals its latest. All four passed complete payload hash verification
+before and after deletion; sampler database checks passed and pointers are unchanged.
+Matching exports, all datasets, source, logs, TensorBoard events and reports remain.
+The final scan found no other files over 1 GiB outside this retained set and its exports.
+
+The private audit records are `experiment192/cleanup-20261017/plan.json` and
+`result.json` on Hunter, including removed checkpoints' metadata and verification
+hashes. Obsolete payloads were deleted directly under the user's authorization;
+no new Hugging Face checkpoint backup was made for this cleanup. Historical
+pointers outside the retained set describe past runs, not available recovery targets.
+Final failed-run logs were cloud-verified at commit
+`b6d9cb085826444cbbd20807e027b85c4f588a35`; that log relay has finished.
+
+## Sixteen-Node Deployment: 287990 (Finished)
+
+PBS allocated job `287990.hunter-pbs01` at 2026-10-17 10:10:33 CEST, with
+16 exclusive nodes and a deadline of 2026-10-18 10:10:33 CEST. Its bounded
+deployment gate opened after all 44 Hunter tests and Bash syntax validation passed;
+native worker launch was recorded at 10:15:23 CEST. All 64 worker log files exist.
+The immutable source is `experiment192/source-sixteen-batch-20261017-v1`, archive
+SHA256 `9609b38c1e0407ef2a29df65cbf8f696f4ac900ee3741f401bb315c773102600`.
+Locally, 28 tests pass and the 16 native Bash cases are skipped.
+
+This is a continuation of the six-node run, not a reset to parent step 328.
+Arm A resumes step 530 (202 updates), and arm B resumes step 529 (201 updates).
+FP32 model and Adam state, filtered sampler counters, best checkpoints, selection
+windows, LR position and event history are retained. The original 1,000-update
+budget is not restarted. Per-rank RNG is reseeded for the changed topology;
+continuation is not bitwise identical. Both 32-worker backward/Adam hardware gates
+and full recovery verification passed. Live history reached 214 updates in A and
+213 in B, twelve fresh updates per arm. A job-bound inspection found four GPUs on
+each of all 16 hosts, with 96-100% utilization in that snapshot. The exact deployed
+source is backed up at GitHub commit `1f5f727e3df3ab772d01154e75d157e4984db0ea`.
+
+The first new-job log backup is cloud-verified at
+`5d31e936198ecf1c7a1893c486eb1c68967877e6`. During that run, the independent relay
+uploaded every 300 seconds through the authenticated SSH tunnel. TensorBoard uses the same local
+event mirror at http://127.0.0.1:16006. Keep the PC, VPN, tunnel and relay available.
+
+## Previous Submission: 287977
+
+The user requested release before resubmission, then changed the requested order
+after deletion had been issued. PBS confirms the old six-node job finished with
+exit status 137. Both arms had written final recovery markers at updates 202 and
+201, and the final test was never opened. The old job's final logs were verified at
+Hugging Face commit `86a93c132077a2094cc8c9e524414bf1d7156729`.
+
+The following records describe the earlier six-node deployment and outage.
 
 PBS accepted native batch job `287977.hunter-pbs01` and started it at
 2026-10-17 09:25:09 CEST, with six exclusive nodes, 96 CPUs per node and a
@@ -43,18 +113,51 @@ is still armed, but also requires the forwarding endpoint.
 
 ## Automatic Launch
 
-PBS starts `run.sh` itself, without an interactive allocation shell, compute SSH,
-or nested `pbs_attach`. Submission requests six exclusive nodes, 96 CPU cores per
-node, four GPUs per node, and disables rerunning. The source is immutable and
-hash-checked before startup; duplicate-start locks prevent a second copy.
-The job ID, start time and 24-hour deadline come from the actual PBS job.
-The detached controller observes progress but never launches a competing process.
-A nonzero batch exit is recorded immediately and propagated through the notifier.
+For the existing interactive job 287999, `control192.py --autolaunch` waits for
+running state, actual start time and six allocated hosts. It validates exclusive
+96-core resources and dispatches a single PBS-attached process on the master via
+job-bound SSH. The master rechecks its hostname, PBS node file, immutable source
+hashes and shared quota. Separate dispatch/start/run locks prevent duplicate launches.
+The original `qsub -I` terminal must remain open; no replacement job is submitted.
+The batch entry remains supported for future explicitly authorized batch requests.
+All workers run natively through MPI; no nested per-worker attachment is used.
+The actual PBS start determines the 24-hour deadline. Nonzero exits and missing
+fresh updates are reported to the current-session notifier.
 
 Training first runs its full-size backward/Adam gate on every worker, rolls that
 update back, reloads the parent FP32/Adam state, and saves an initial recovery
 checkpoint. The user authorized replacement allocations when necessary; retries
 must first diagnose the error and verify the old job and its workers have stopped.
+
+## Review Fixes and Storage Lifecycle
+
+Both arms resume step 578 / new update 250 from job 287990, preserving full Adam,
+sampler and selection state. The 32-to-12 transition reseeds rank RNG; same-layout
+resume restores saved rank RNG. Neither is claimed bitwise-certified. History is
+rolled back to the complete checkpoint and original events are purged above it.
+Training-cutoff caching is tested draw-identical. Known-ID embedding rows are held
+at resume values after Adam steps; the unknown row remains trainable. This prevents
+unused-row drift but does not freeze the complete IDs-on reference score.
+
+The first five-score selection window includes the baseline. Training draws are
+not paired because weighted choice consumes RNG differently. Matched evaluation
+uses 1,248 baskets per side, with 23 of 101 cells short of matched dates.
+Compute-only, low-priority audits run alongside training; pruned historical ledgers
+are reported unavailable. Final-test access requires scientific completion, never
+only a deadline, quota or signal stop.
+
+Startup requires six checkpoint payloads plus 8 GiB of headroom (about 103.6 GiB).
+Runtime checks every ten updates reserve four payloads plus 8 GiB; each save checks
+space for two concurrent payloads plus 8 GiB. Existing atomic-save checks remain.
+Cloud recovery snapshots hardlink immutable checkpoint files; mutable logs are copied.
+Log backups remain independent at 300 seconds. Private backups use job-scoped paths,
+include complete stopped-run recoveries even after failure, and verify cloud hashes
+and privacy before acknowledging cleanup on Hunter. Best/latest are always retained.
+Superseded source checkpoints are eligible only after their own private receipt,
+verified replacement receipt, finished allocation work and completed exposure audit.
+The parent checkpoint, datasets, logs, code and metadata are never cleanup targets.
+If backup fails, local recovery remains protected. This reduces quota-related risk;
+it cannot guarantee against infrastructure failure or loss of the interactive shell.
 
 ## Failed Allocation Evidence
 
@@ -101,8 +204,8 @@ IDs-on reference is explicitly labeled.
 
 ## Validation Status
 
-The six-node revision passes 25 local tests. Six additional native Bash tests run
-on Hunter and exercise every arm/node-rank branch and post-module Socket transport.
+The 16-node revision passes 28 local tests and all 44 tests on Hunter. Sixteen
+native Bash tests exercise every arm/node-rank branch and post-module Socket transport.
 GPU hardware gates and actual first updates must be checked after allocation;
 unit tests and scheduler running state do not establish successful training.
 

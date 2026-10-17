@@ -105,6 +105,22 @@ def reference(workspace):
     print("REFERENCE_CURVE_READY", flush=True)
 
 
+def audits_local(workspace, source):
+    if os.environ.get("PBS_JOBID") != JOB or os.environ.get("PMI_RANK") != "5":
+        raise ValueError("CPU audits must run in the allocated final worker task")
+    output = workspace / "experiment192/artifacts" / f"job-{JOB}" / "audits"
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "launch.lock").mkdir()
+    environment = {**os.environ, "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"}
+    commands = [shlex.join([str(workspace / "venv/bin/python"), "-u", str(source / "audit192.py"), action,
+                "--workspace", str(workspace), "--panel", str(workspace / "data/panel"), "--output", str(output)])
+                for action in ("universe", "exposure")]
+    with (output / "audit.log").open("ab") as stream:
+        subprocess.Popen(["/usr/bin/nice", "-n", "19", "/usr/bin/taskset", "-c", "88-95", "/usr/bin/bash", "-c",
+                          " && ".join(commands)], env=environment, stdin=subprocess.DEVNULL,
+                         stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
+
+
 def audits(workspace, source):
     root = workspace / "experiment192/artifacts" / f"job-{JOB}"
     output = root / "audits"
@@ -140,11 +156,13 @@ def audits(workspace, source):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("reference", "audits"))
+    parser.add_argument("action", choices=("reference", "audits", "audits-local"))
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--source", type=Path)
     arguments = parser.parse_args()
     if arguments.action == "reference":
         reference(arguments.workspace)
+    elif arguments.action == "audits-local":
+        audits_local(arguments.workspace, arguments.source)
     else:
         audits(arguments.workspace, arguments.source)

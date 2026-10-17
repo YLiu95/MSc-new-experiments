@@ -5,12 +5,15 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
+import socket
 import subprocess
 import threading
 import time
 from zoneinfo import ZoneInfo
 
 from policy192 import JOB, NODES
+from storage192 import require_headroom
 
 
 def write_json(path, value):
@@ -24,6 +27,8 @@ def allocation(job):
     resources = job["Resource_List"]
     if int(resources["nodect"]) != NODES or resources["walltime"] != "24:00:00":
         raise ValueError(f"Expected a {NODES}-node 24-hour allocation")
+    if int(resources.get("ncpus", 0)) != NODES * 96 or resources.get("place") != "scatter:excl":
+        raise ValueError("Expected exclusive nodes with 96 CPU cores each")
     if job["job_state"] != "R" or not job.get("stime") or not job.get("exec_host"):
         return None
     hosts = list(dict.fromkeys(part.split("/")[0] for part in job["exec_host"].split("+")))
@@ -50,19 +55,69 @@ def scheduler_job():
 
 
 def batch_start(workspace, source):
-    if os.environ.get("PBS_JOBID") != JOB or os.environ.get("PBS_ENVIRONMENT") != "PBS_BATCH":
+    interactive = os.environ.get("PBS_ENVIRONMENT") == "PBS_INTERACTIVE" and os.environ.get("TRAIN192_ATTACHED") == JOB
+    if os.environ.get("PBS_JOBID") != JOB or not (os.environ.get("PBS_ENVIRONMENT") == "PBS_BATCH" or interactive):
         raise ValueError("Startup must run inside the native PBS batch job")
     validate_source(workspace, source)
     timing = allocation(scheduler_job())
     if timing is None or time.time() + 900 >= timing["stop_epoch"]:
         raise ValueError("Batch allocation is not ready or lacks startup reserve")
+    if interactive:
+        validate_compute(timing)
+    storage = require_headroom(workspace)
     control = workspace / "experiment192/artifacts" / f"job-{JOB}" / "control"
     control.mkdir(parents=True, exist_ok=True)
     (control / "start.lock").mkdir()
+    write_json(control / "storage-admission.json", storage)
     write_json(control / "deadlines.json", {"job": JOB, **timing})
-    write_json(control / "launch.json", {"event": "native_batch_started", "job": JOB,
+    write_json(control / "launch.json", {"event": "attached_interactive_started" if interactive else "native_batch_started", "job": JOB,
                                         "source": str(source), "time": time.time(), **timing})
     return timing["end_epoch"]
+
+
+def validate_compute(timing):
+    nodefile = Path(f"/var/spool/pbs/aux/{JOB}")
+    if socket.gethostname().split(".")[0] != timing["hosts"][0]:
+        raise ValueError("Dispatch must execute on this allocation's master node")
+    hosts = list(dict.fromkeys(line.split(".")[0] for line in nodefile.read_text().splitlines()))
+    if hosts != timing["hosts"]:
+        raise ValueError("PBS node file differs from the live allocation")
+    return nodefile
+
+
+def dispatch(workspace, source):
+    validate_source(workspace, source)
+    timing = allocation(scheduler_job())
+    if timing is None or time.time() + 900 >= timing["stop_epoch"]:
+        raise ValueError("Interactive allocation lacks startup reserve")
+    nodefile = validate_compute(timing)
+    require_headroom(workspace)
+    control = workspace / "experiment192/artifacts" / f"job-{JOB}" / "control"
+    control.mkdir(parents=True, exist_ok=True)
+    try:
+        (control / "dispatch.lock").mkdir()
+    except FileExistsError:
+        return
+    environment = {**os.environ, "PBS_JOBID": JOB, "PBS_ENVIRONMENT": "PBS_INTERACTIVE",
+                   "PBS_NODEFILE": str(nodefile), "PBS_MOMPORT": "15003", "PBS_NODENUM": "0", "PBS_TASKNUM": "1",
+                   "TRAIN192_ATTACHED": JOB, "TRAIN192_SOURCE": str(source), "HUNTER_WORKSPACE": str(workspace)}
+    with (control / "launch.log").open("ab") as stream:
+        child = subprocess.Popen(["/opt/pbs/bin/pbs_attach", "-j", JOB, "-s", "/usr/bin/bash", str(source / "run.sh")],
+                                 env=environment, stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.STDOUT,
+                                 start_new_session=True)
+    write_json(control / "dispatch.json", {"job": JOB, "pid": child.pid, "host": timing["hosts"][0], "time": time.time()})
+
+
+def request_launch(workspace, source, timing):
+    shell = (f"export HUNTER_WORKSPACE={shlex.quote(str(workspace))} EXPERIMENT192_JOB={shlex.quote(JOB)}; "
+             f"source {shlex.quote(str(workspace / 'source-six-node-20261014/env.sh'))}; "
+             f"export PYTHONPATH={shlex.quote(str(source))}:\"$PYTHONPATH\"; "
+             f"export RESUME192_ROOT={shlex.quote(os.environ['RESUME192_ROOT'])}; "
+             + shlex.join([str(workspace / "venv/bin/python"), str(source / "control192.py"),
+                           "--workspace", str(workspace), "--source", str(source), "--dispatch"]))
+    subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", timing["hosts"][0],
+                    "bash -lc " + shlex.quote(shell)], env={**os.environ, "PBS_JOBID": JOB},
+                   check=True, capture_output=True, text=True, timeout=60)
 
 
 def batch_exit(workspace, exit_code):
@@ -96,25 +151,30 @@ def progress(root):
                 complete = (checkpoint / "COMPLETE").is_file()
             except (OSError, ValueError, KeyError):
                 pass
-        result[arm] = {"preflight_passed": (directory / "reports/preflight.json").is_file(),
+        preflight_path = directory / "reports/preflight.json"
+        preflight = json.loads(preflight_path.read_text()) if preflight_path.is_file() else {}
+        updates = record.get("new_updates", 0) if record else 0
+        starting = preflight.get("starting_new_updates", updates)
+        result[arm] = {"preflight_passed": preflight.get("passed") is True,
                        "initial_checkpoint_complete": complete,
-                       "new_updates": record.get("new_updates", 0) if record else 0,
+                   "new_updates": updates, "starting_new_updates": starting,
+                   "fresh_updates": max(0, updates - starting),
                        "last_update_time": record.get("time") if record else None,
                        "done": (directory / "TRAINING_DONE.json").is_file()}
     return result
 
 
-def watch(workspace, source):
+def watch(workspace, source, autolaunch=False):
     root = workspace / "experiment192/artifacts" / f"job-{JOB}"
     control = root / "control"
     control.mkdir(parents=True, exist_ok=True)
     (control / "watch.lock").mkdir()
     validate_source(workspace, source)
-    previous, heartbeat, failures, notified = None, 0, 0, set()
+    previous, heartbeat, failures, notified, launch_attempts = None, 0, 0, set(), 0
     while True:
         try:
             job = scheduler_job()
-            allocation(job)
+            timing = allocation(job)
             failures = 0
         except (OSError, subprocess.SubprocessError, ValueError, KeyError) as error:
             failures += 1
@@ -124,6 +184,18 @@ def watch(workspace, source):
             threading.Event().wait(min(30, 5 * failures))
             continue
         now = time.time()
+        if autolaunch and timing and not (control / "dispatch.lock").exists() and launch_attempts < 12:
+            launch_attempts += 1
+            try:
+                request_launch(workspace, source, timing)
+            except (OSError, subprocess.SubprocessError) as error:
+                write_json(control / "launch-retry.json", {"attempt": launch_attempts, "error": str(error), "time": time.time()})
+                if launch_attempts == 12:
+                    write_json(control / "failure.json", {"event": "launch_failed", "error": str(error), "time": time.time()})
+        if (control / "dispatch.json").is_file() and not (control / "launch.json").is_file():
+            dispatched = json.loads((control / "dispatch.json").read_text())
+            if now - dispatched["time"] > 180:
+                write_json(control / "failure.json", {"event": "attachment_failed", "dispatch": dispatched, "time": now})
         current = progress(root)
         fingerprint = (job["job_state"], tuple((arm, values["preflight_passed"], values["new_updates"], values["done"]) for arm, values in current.items()))
         if fingerprint != previous or now - heartbeat >= 60:
@@ -132,14 +204,14 @@ def watch(workspace, source):
             write_json(control / "status.json", record)
             print(json.dumps(record), flush=True)
             previous, heartbeat = fingerprint, now
-        if all(values["new_updates"] > 0 for values in current.values()) and "training" not in notified:
+        if all(values["preflight_passed"] and values["fresh_updates"] > 0 for values in current.values()) and "training" not in notified:
             print(json.dumps({"event": "BOTH_ARMS_TRAINING", "job": JOB, "arms": current, "time": now}), flush=True)
             notified.add("training")
         launch_path = control / "launch.json"
         if launch_path.is_file():
             launch_at = json.loads(launch_path.read_text())["time"]
             for arm, values in current.items():
-                reference = values["last_update_time"] or launch_at
+                reference = max(values["last_update_time"] or launch_at, launch_at)
                 if not values["done"] and now - reference > 1200 and arm not in notified:
                     alert = {"event": "INTERVENTION_REQUIRED", "job": JOB, "arm": arm,
                              "reason": "No completed update in twenty minutes", "time": now}
@@ -164,10 +236,14 @@ if __name__ == "__main__":
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--batch-start", action="store_true")
     action.add_argument("--batch-exit", type=int)
+    action.add_argument("--dispatch", action="store_true")
+    action.add_argument("--autolaunch", action="store_true")
     arguments = parser.parse_args()
     if arguments.batch_start:
         print(batch_start(arguments.workspace, arguments.source))
     elif arguments.batch_exit is not None:
         batch_exit(arguments.workspace, arguments.batch_exit)
+    elif arguments.dispatch:
+        dispatch(arguments.workspace, arguments.source)
     else:
-        watch(arguments.workspace, arguments.source)
+        watch(arguments.workspace, arguments.source, arguments.autolaunch)

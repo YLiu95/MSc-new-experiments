@@ -26,7 +26,7 @@ from ranker.losses import pairwise_logistic
 from ranker.sampler import Sampler
 from ranker.train import informative_count, optimizer_for
 from ranking17.model import ModelConfig
-from ranking17.recovery import digest, verify
+from ranking17.recovery import digest, restore_rng, verify
 from ranking17.train import batch_for, memory_record
 from train19 import checkpoint
 from train191 import PARENT_MANIFEST, PARENT_REVISION, distribute_assignments, verify_parent
@@ -35,6 +35,7 @@ from model192 import IdentityHiddenModel
 from policy192 import GLOBAL_BATCH, JOB, MICROBATCH, PARENT_STEP, UPDATE_BUDGET, WORLD, SmoothedSelection, learning_rate
 from prepare192 import load_protocol
 from sampler192 import FilteredPanel, Sampler192
+from storage192 import require_headroom, storage_status
 
 
 STOP = False
@@ -69,12 +70,13 @@ def update(model, wrapped, optimizer, batches, update_index):
     if not torch.isfinite(totals).all() or not math.isfinite(norm):
         raise RuntimeError("Nonfinite training update")
     optimizer.step()
+    model.restore_identity_reference()
     torch.cuda.synchronize()
     return {"loss": totals[0].item() / count.item(), "pairs": totals[1].item(), "lr": rate,
             "gradient_norm": norm, "score_variance": totals[2].item() / (len(batches) * context.dp_size)}
 
 
-def load_parent(parent, model, optimizer, update_index=0):
+def load_parent(parent, model, optimizer, update_index=0, *, restore_rank_rng=False):
     recovery = torch.load(parent / "recovery-00.pt", map_location="cpu", weights_only=True)
     model.load_state_dict(recovery["model"])
     optimizer.state.clear()
@@ -89,6 +91,9 @@ def load_parent(parent, model, optimizer, update_index=0):
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed % 2**32)
     random.seed(seed)
+    if restore_rank_rng:
+        restore_rng(torch.load(parent / f"rng-{model.context.rank:04d}.pt", map_location="cpu", weights_only=True),
+                    model.context.device)
 
 
 def prepare_resume(arm_root, root, arm, config):
@@ -109,8 +114,9 @@ def prepare_resume(arm_root, root, arm, config):
     if changed - allowed:
         raise ValueError(f"Resume changes the frozen training contract: {sorted(changed - allowed)}")
     state = json.loads((directories["latest"] / "state.json").read_text())
-    if state["experiment"] != "1.9.2" or state["arm"] != arm or state["world"] != 12 or WORLD != 32:
-        raise ValueError("Expected the same arm migrating from 12 to 32 workers")
+    if (state["experiment"] != "1.9.2" or state["arm"] != arm or state["world"] not in (12, 32)
+            or WORLD not in (12, 32) or previous["dp"] != state["world"]):
+        raise ValueError("Expected the same arm with a supported 12- or 32-worker layout")
     if state["step"] != PARENT_STEP + state["new_updates"] or state["scheduled"] != 104960 + GLOBAL_BATCH * state["new_updates"]:
         raise ValueError("Resume progress disagrees with the fixed batch contract")
     SmoothedSelection.from_state(state["selection"])
@@ -135,7 +141,10 @@ def prepare_resume(arm_root, root, arm, config):
                   "manifest_sha256": digest(directories["latest"] / "manifest.json"),
                   "previous_world": state["world"], "world": WORLD, "new_updates": state["new_updates"],
                   "optimizer_preserved": True, "sampler_preserved": True, "selection_preserved": True,
-                  "rng_reseeded": True, "bitwise_continuation": False}
+                  "rng_reseeded": state["world"] != WORLD, "rank_rng_restored": state["world"] == WORLD,
+                  "known_identity_rows_frozen_from_update": state["new_updates"],
+                  "identity_optimizer_state_preserved": True,
+                  "bitwise_continuation": False}
     state["world"] = WORLD
     write_json(root / "reports/resume.json", provenance)
     return {"state": state, "provenance": provenance}
@@ -167,7 +176,7 @@ def main(arguments):
     torch.set_num_threads(4)
     context = ParallelContext.initialize(1)
     if context.dp_size != WORLD or torch.cuda.device_count() != 4:
-        raise RuntimeError("Each arm requires eight nodes with four GPU workers each")
+        raise RuntimeError(f"Each arm requires {WORLD // 4} nodes with four GPU workers each")
     probe = torch.tensor(context.rank + 1, device=context.device)
     dist.all_reduce(probe)
     if probe.item() != WORLD * (WORLD + 1) // 2:
@@ -203,6 +212,7 @@ def main(arguments):
     if model.parameter_count() != 1069302417 or model_config.dropout != 0.15:
         raise ValueError("Parent model contract changed")
     model.load_state_dict(load_file(parent / "weights-00.safetensors"))
+    model.freeze_identity_reference()
     wrapped = DistributedDataParallel(model, device_ids=[local_rank], process_group=context.dp_group,
                                       broadcast_buffers=False, gradient_as_bucket_view=True, bucket_cap_mb=128)
     optimizer = optimizer_for(model, context.device)
@@ -223,7 +233,9 @@ def main(arguments):
     optimizer.zero_grad(set_to_none=True)
     optimizer.state.clear()
     torch.cuda.empty_cache()
-    load_parent(recovery_source, model, optimizer, state["new_updates"])
+    load_parent(recovery_source, model, optimizer, state["new_updates"],
+                restore_rank_rng=bool(resume and resume["provenance"]["rank_rng_restored"]))
+    model.freeze_identity_reference()
     torch.cuda.empty_cache()
     originals = [MarketPanel(panel, market) for market in MARKETS]
     panels = [FilteredPanel(panel, market, arguments.prepared) for market in MARKETS]
@@ -311,6 +323,11 @@ def main(arguments):
                     return "finish", "allocation_reserve"
                 if early_stop:
                     return "finish", "early_stop"
+                if state["new_updates"] % 10 == 0:
+                    storage = storage_status(root)
+                    write_json(root / "reports/storage.json", storage)
+                    if storage["free_bytes"] < storage["operating_required_bytes"]:
+                        return "finish", "quota_reserve"
                 due = state["new_updates"] > validated_update and state["new_updates"] % 50 == 0
                 if due:
                     if time.time() + validation_seconds + 2 * save_seconds + update_seconds >= stop_at:
@@ -348,6 +365,7 @@ def main(arguments):
                     validated_update = state["new_updates"]
                     state["validated_update"] = validated_update
                 if state["step"] != saved_step:
+                    rank_zero(context, lambda: require_headroom(root, "save"))
                     started = time.monotonic()
                     checkpoint(root, model, optimizer, state, sampler, config, best=improved)
                     save_seconds = max(save_seconds, (time.monotonic() - started) * 1.5 + 15)
@@ -357,7 +375,8 @@ def main(arguments):
                         writer.flush()
                         report = {**state, "reason": stop_reason, "finished_at": time.time(), "checkpoint_complete": True,
                                   "finished_before_reserve": time.time() <= stop_at, "training_stop_epoch": stop_at,
-                                  "allocation_end_epoch": arguments.end_at, "selection_frozen": True}
+                                  "allocation_end_epoch": arguments.end_at,
+                                  "selection_frozen": stop_reason in ("early_stop", "update_budget")}
                         write_json(root / "TRAINING_DONE.json", report)
                         print(json.dumps({"event": "training_done", **report}), flush=True)
                     rank_zero(context, finish)

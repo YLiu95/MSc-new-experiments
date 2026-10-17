@@ -30,7 +30,7 @@ regime change after 2018? Existing checkpoints cannot answer it, so this run bui
 
 ## 3. Design
 
-Two arms run at the same time from step 328, each on 3 nodes (12 MI300As). They share the same seed,
+Two arms run at the same time from step 328, each on 3 nodes (12 MI300As). They share the same base seed,
 global batch, LR schedule, update budget and evaluation.
 
 | Arm | Stock IDs | Market sampling |
@@ -39,7 +39,8 @@ global batch, LR schedule, update budget and evaluation.
 | **B** | Always hidden | Probability ∝ eligible training-period stock-days per market |
 
 Reference curve: Experiment 1.9.1 (IDs on, constant LR 6e-5), same parent. Arm B differs from A only in
-market choice; per-basket RNG seeding is unchanged.
+market-choice policy, but weighted choice consumes RNG differently, so dates and stocks are not exactly
+paired between arms. Common fixed evaluation baskets, not training draws, support paired comparisons.
 
 | Setting | Value |
 |---|---|
@@ -50,16 +51,32 @@ market choice; per-basket RNG seeding is unchanged.
 | Sampler ledger | Restore parent 328 ledger (prevents exact-basket repeats) |
 | Expected duration | Must be measured on three nodes per arm; the scheduler's 24-hour deadline is authoritative |
 
-## 4. Data Splits
+### Operational Amendments
 
-Operational amendment, 2026-10-17: job `287925.hunter-pbs01` ended before any update.
-The user authorized requesting six nodes for 24 hours and replacement allocations if needed.
-Use a native PBS batch job with three disjoint nodes and 12 GPU workers per arm,
-scheduler-derived deadlines, and unchanged global batch, seed, LR and update budget.
-Per-rank RNG streams are reseeded for the new world size, identically across arms;
-this is not bitwise continuation of the former topology. Preserve old job artifacts.
+Operational amendment, 2026-10-17: after six-node job `287977.hunter-pbs01`, the
+user requested 16 nodes for 24 hours. Replacement job `287990.hunter-pbs01` uses
+eight disjoint nodes and 32 GPU workers per arm with scheduler-derived deadlines.
+Resume A from step 530 (202 updates) and B from step 529 (201 updates), retaining
+FP32 model/Adam state, exact sampler progress, selection history and best checkpoints.
+Global batch, LR schedule and the total 1,000-update budget remain unchanged.
+Per-rank RNG streams are reseeded from the base seed, saved step and new world size;
+different saved steps mean different arm streams. This is not bitwise continuation
+of the former topology. Preserve old job artifacts; the final test remains sealed.
+That run failed at update 300 because group quota could not hold the concurrent atomic saves.
+The last complete recoveries for both arms are step 578 / 250 new updates / world 32.
+Queued interactive job `287999.hunter-pbs01` requests six exclusive nodes with 96 CPU cores each,
+for 24 hours. Resume both saved update-250 states on 12 workers per arm; reseed rank RNG for
+32-to-12 migration, preserve Adam, sampler, best checkpoints and selection, and continue the
+original 1,000-update budget. Old unsaved update-251-to-300 logs are not restored as progress.
+Known stock-ID rows are restored to their resume values after every Adam step to prevent inherited
+momentum or weight decay from moving these unused rows; the unknown-ID row remains trainable.
+This operational amendment does not make the entire IDs-on reference score invariant.
+Training-cutoff caching preserves the tested draw sequence; its throughput benefit is unmeasured.
+
 Do not open new Copilot sessions or invoke Copilot CLI. Use terminal notifications
 associated with the current conversation; idle-chat activation remains client-dependent.
+
+## 4. Data Splits
 
 | Split | Definition | Use |
 |---|---|---|
@@ -76,11 +93,11 @@ Before use, confirm that no previous experiment evaluated on the `test` split.
 
 ## 5. Evaluation and Logging
 
-| Cohort (1,616 baskets, 8 primary tasks, 13 markets) | IDs | Frequency |
+| Cohort (8 primary tasks, 13 markets where feasible) | IDs | Frequency |
 |---|---|---|
 | Validation monitoring subset | Hidden (primary); on (reference) | Every 50 updates |
-| Training-era 2015–2018, included stocks | Hidden | Every 200 updates |
-| Training-era 2015–2018, held-out stocks | Hidden | Every 200 updates |
+| Training-era 2015–2018, included stocks (1,248 baskets) | Hidden | Every 200 updates |
+| Training-era 2015–2018, held-out stocks (1,248 baskets) | Hidden | Every 200 updates |
 | Final test | Hidden | Once at end, for both arms' selected checkpoints and for step 328 |
 
 Build training-era cohorts with the 1.9.1 diagnostic cohort builder. Use dates and tasks matched across
@@ -92,6 +109,8 @@ preserve the original basket sizes and 10% stock split, and report omitted cells
 sizes. Never pad or duplicate stocks. The user confirmed that the final test split has never been
 evaluated in earlier experiments; preserve that confirmation and keep access sealed until final
 checkpoint selection is complete.
+The frozen matched cohorts contain 1,248 baskets per side, not 1,616: 23 of 101 market/task cells
+had insufficient matched dates. The preparation feasibility report records these omissions.
 
 Per update, log what 1.9.1 logged (loss, gradient norm, score variance, LR, throughput) plus cumulative
 label stock-day exposure per market.
@@ -99,13 +118,22 @@ label stock-day exposure per market.
 Follow the experiment log-backup standard: public HF log repository, immediate upload and then every
 300 s, no overlapping uploads, verified commits and a final flush. Optimizer, RNG, sampler, panels and
 cohort definitions stay private.
+After every stopped run, upload complete best/latest recovery payloads to the private recovery
+repository and verify the pinned commit before cleanup. Retain the best 1B parent and current
+best/latest per arm locally. Immutable snapshots use hardlinks, not full disk copies. Failed
+uploads never authorize deletion; superseded runs require their own verified backup receipt.
+Startup and runtime quota checks reserve space for both arms' concurrent atomic saves.
 
 ## 6. Stopping and Checkpoint Selection
 
 - **Selection metric:** mean of the last 5 IDs-hidden validation scores (smoothed; SE about 0.002).
+- **Initial window:** includes the pre-training baseline plus updates 50, 100, 150 and 200.
+  Preserve this window and its saved history on resume; do not reset selection retrospectively.
 - **Early stop:** no smoothed improvement > 0.002 for 6 consecutive validations (300 updates).
 - **Retained checkpoints:** best smoothed and latest; keep the existing pre-expiry save, staged writes,
   SHA verification and rank-0 broadcast decisions.
+- **Operational stops:** quota reserve, signal and deadline stops save recovery but do not freeze
+  final selection or open the final test. Only budget completion or early stopping qualifies.
 
 ## 7. Decision Rules
 
@@ -121,12 +149,16 @@ Baseline: step 328 IDs-hidden validation **0.0818**. Its IDs-on 0.0853 is inflat
 
 Report differences below 0.004 as inconclusive. Use paired time-block resampling for per-market claims.
 
-## 8. Pre-Run Audits (CPU only, run in parallel, do not block launch)
+## 8. Pre-Run Audits (CPU only, concurrent with training, do not block launch)
 
 1. **Exposure audit:** count unique (stock, cutoff, horizon) labels and overlapping label-days used by
    Experiments 1.7, 1.7.1, 1.9 and 1.9.1 per market. Output: per-market reuse table.
 2. **Universe audit:** survivorship (dataset is survivors only), point-in-time membership, delistings and
    label construction. Output: list of known biases affecting validation and test.
+Run these at low priority on allocated compute CPUs, not login nodes. Historical checkpoint cleanup
+removed the 1.7.1 and 1.9.1 ledgers; report these as unavailable, never reconstructed estimates.
+Audit the retained 1.9 parent and both 1.9.2 update-250 filtered ledgers, excluding rejected parent
+baskets. Completed processing does not imply complete historical coverage or external bias validation.
 
 ## 9. Implementation Tasks
 

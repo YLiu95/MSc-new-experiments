@@ -7,8 +7,8 @@ import numpy as np
 
 
 JOB = os.environ.get("EXPERIMENT192_JOB", "unsubmitted")
-NODES = 16
-WORLD = 32
+NODES = 6
+WORLD = 12
 GLOBAL_BATCH = 1536
 MICROBATCH = 2
 UPDATE_BUDGET = 1000
