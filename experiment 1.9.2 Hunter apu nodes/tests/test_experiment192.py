@@ -187,10 +187,11 @@ def test_ten_thousand_draws_exclude_holdout_and_parent_baskets(tmp_path, arm):
     sampler.close()
 
 
-def test_audit_records_pruned_history_without_crashing(tmp_path):
+def test_audit_records_pruned_history_without_crashing(tmp_path, monkeypatch):
     import json
     from audit192 import exposure
     from ranker.data import write_json
+    monkeypatch.setenv("RESUME192_ROOT", str(tmp_path / "missing-resume"))
     root = tmp_path / "experiment19/artifacts/job-286615.hunter-pbs01"
     write_json(root / "latest.json", {"directory": "checkpoints/pruned"})
     output = tmp_path / "reports"
