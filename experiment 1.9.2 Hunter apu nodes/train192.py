@@ -6,6 +6,7 @@ import math
 import os
 from pathlib import Path
 import random
+import shutil
 import signal
 import socket
 import time
@@ -25,7 +26,7 @@ from ranker.losses import pairwise_logistic
 from ranker.sampler import Sampler
 from ranker.train import informative_count, optimizer_for
 from ranking17.model import ModelConfig
-from ranking17.recovery import digest
+from ranking17.recovery import digest, verify
 from ranking17.train import batch_for, memory_record
 from train19 import checkpoint
 from train191 import PARENT_MANIFEST, PARENT_REVISION, distribute_assignments, verify_parent
@@ -73,21 +74,71 @@ def update(model, wrapped, optimizer, batches, update_index):
             "gradient_norm": norm, "score_variance": totals[2].item() / (len(batches) * context.dp_size)}
 
 
-def load_parent(parent, model, optimizer):
+def load_parent(parent, model, optimizer, update_index=0):
     recovery = torch.load(parent / "recovery-00.pt", map_location="cpu", weights_only=True)
     model.load_state_dict(recovery["model"])
     optimizer.state.clear()
     optimizer.load_state_dict(recovery["optimizer"])
     del recovery
     for group in optimizer.param_groups:
-        group["lr"] = learning_rate(0)
+        group["lr"] = learning_rate(update_index)
         if group["weight_decay"] not in (0, 0.1):
             raise ValueError("Unexpected parent weight decay")
-    seed = model.config.seed + PARENT_STEP * WORLD + model.context.dp_rank
+    seed = model.config.seed + (PARENT_STEP + update_index) * WORLD + model.context.dp_rank
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed % 2**32)
     random.seed(seed)
+
+
+def prepare_resume(arm_root, root, arm, config):
+    if (arm_root.parent / "final-test/OPENED.json").exists():
+        raise ValueError("Cannot resume training after final-test access")
+    if (root / "latest.json").exists():
+        raise ValueError("Resume destination already contains a checkpoint")
+    pointers, directories = {}, {}
+    for label in ("latest", "best"):
+        pointer = json.loads((arm_root / f"{label}.json").read_text())
+        directory = (arm_root / pointer["directory"]).resolve()
+        directory.relative_to((arm_root / "checkpoints").resolve())
+        verify(directory, workers=4)
+        pointers[label], directories[label] = pointer, directory
+    previous = json.loads((directories["latest"] / "config.json").read_text())
+    allowed = {"dp", "source_sha256", "migration", "resume", "allocation_end_epoch", "training_stop_epoch"}
+    changed = {key for key in previous.keys() | config.keys() if previous.get(key) != config.get(key)}
+    if changed - allowed:
+        raise ValueError(f"Resume changes the frozen training contract: {sorted(changed - allowed)}")
+    state = json.loads((directories["latest"] / "state.json").read_text())
+    if state["experiment"] != "1.9.2" or state["arm"] != arm or state["world"] != 12 or WORLD != 32:
+        raise ValueError("Expected the same arm migrating from 12 to 32 workers")
+    if state["step"] != PARENT_STEP + state["new_updates"] or state["scheduled"] != 104960 + GLOBAL_BATCH * state["new_updates"]:
+        raise ValueError("Resume progress disagrees with the fixed batch contract")
+    SmoothedSelection.from_state(state["selection"])
+    for directory in set(directories.values()):
+        shutil.copytree(directory, root / "checkpoints" / directory.name, copy_function=os.link)
+    for label, pointer in pointers.items():
+        write_json(root / f"{label}.json", pointer)
+    for name in ("history.jsonl", "validation.jsonl"):
+        source = arm_root / name
+        if source.exists():
+            with source.open() as incoming, (root / name).open("w") as outgoing:
+                for line in incoming:
+                    record = json.loads(line)
+                    if record["new_updates"] <= state["new_updates"]:
+                        outgoing.write(line)
+    if (arm_root / "runs").exists():
+        shutil.copytree(arm_root / "runs", root / "runs")
+    baseline = arm_root / "reports/baseline.json"
+    if baseline.exists():
+        write_json(root / "reports/baseline.json", json.loads(baseline.read_text()))
+    provenance = {"previous_arm_root": str(arm_root), "checkpoint": str(directories["latest"]),
+                  "manifest_sha256": digest(directories["latest"] / "manifest.json"),
+                  "previous_world": state["world"], "world": WORLD, "new_updates": state["new_updates"],
+                  "optimizer_preserved": True, "sampler_preserved": True, "selection_preserved": True,
+                  "rng_reseeded": True, "bitwise_continuation": False}
+    state["world"] = WORLD
+    write_json(root / "reports/resume.json", provenance)
+    return {"state": state, "provenance": provenance}
 
 
 def rank_zero(context, operation):
@@ -116,7 +167,7 @@ def main(arguments):
     torch.set_num_threads(4)
     context = ParallelContext.initialize(1)
     if context.dp_size != WORLD or torch.cuda.device_count() != 4:
-        raise RuntimeError("Each arm requires three nodes with four GPU workers each")
+        raise RuntimeError("Each arm requires eight nodes with four GPU workers each")
     probe = torch.tensor(context.rank + 1, device=context.device)
     dist.all_reduce(probe)
     if probe.item() != WORLD * (WORLD + 1) // 2:
@@ -141,6 +192,12 @@ def main(arguments):
                             "filtered_counters_new": True, "exact_parent_baskets_excluded": True,
                             "rng_reseeded": True, "bitwise_continuation": False}}
     state = {**inherited, "world": WORLD, "experiment": "1.9.2", "arm": arguments.arm, "new_updates": 0}
+    resume = rank_zero(context, lambda: prepare_resume(arguments.resume_arm_root, root, arguments.arm, config)) if arguments.resume_arm_root else None
+    recovery_source = parent
+    if resume:
+        state = resume["state"]
+        config["resume"] = resume["provenance"]
+        recovery_source = Path(resume["provenance"]["checkpoint"])
     model_config = ModelConfig(**config["model"])
     model = IdentityHiddenModel(model_config, context)
     if model.parameter_count() != 1069302417 or model_config.dropout != 0.15:
@@ -166,7 +223,7 @@ def main(arguments):
     optimizer.zero_grad(set_to_none=True)
     optimizer.state.clear()
     torch.cuda.empty_cache()
-    load_parent(parent, model, optimizer)
+    load_parent(recovery_source, model, optimizer, state["new_updates"])
     torch.cuda.empty_cache()
     originals = [MarketPanel(panel, market) for market in MARKETS]
     panels = [FilteredPanel(panel, market, arguments.prepared) for market in MARKETS]
@@ -175,23 +232,25 @@ def main(arguments):
 
     def initialize():
         nonlocal sampler, writer
-        if (root / "latest.json").exists():
+        if (root / "latest.json").exists() and not resume:
             raise ValueError("Run already contains a checkpoint")
-        sampler = Sampler192.from_parent(panels, originals, parent / "sampler.sqlite", root / "ledgers" / f"{uuid.uuid4().hex}.sqlite",
-                                        arguments.arm, protocol["market_weights"], model_config.seed)
+        restore_sampler = Sampler192.from_checkpoint if resume else Sampler192.from_parent
+        sampler = restore_sampler(panels, originals, recovery_source / "sampler.sqlite", root / "ledgers" / f"{uuid.uuid4().hex}.sqlite",
+                                  arguments.arm, protocol["market_weights"], model_config.seed)
         reference = Sampler(originals, root / "ledgers" / "catalogue-check.sqlite", model_config.seed)
         try:
-            if sampler.catalogue != reference.catalogue or sampler.issued != inherited["scheduled"]:
+            if sampler.catalogue != reference.catalogue or sampler.issued != state["scheduled"]:
                 raise ValueError("Filtering changed the parent task catalogue or scheduled progress")
         finally:
             reference.close()
-        writer = SummaryWriter(str(root / "runs" / f"arm-{arguments.arm}"))
+        writer = SummaryWriter(str(root / "runs" / f"arm-{arguments.arm}"), purge_step=state["new_updates"] + 1 if resume else None)
         write_json(root / "config.json", config)
         write_json(root / "reports/preflight.json", {"passed": True, "world": WORLD, "global_batch": GLOBAL_BATCH,
                    "microbatch": MICROBATCH, "worst_microbatch_seconds": gate_seconds, "memory_phases": memory,
-                   "synthetic_update_rolled_back": True, "parent_full_payload_verified": True})
+                   "synthetic_update_rolled_back": True, "parent_full_payload_verified": True,
+                   "resume_full_payload_verified": bool(resume), "starting_new_updates": state["new_updates"]})
         write_json(root / "reports/protocol.json", protocol)
-        writer.add_scalar("preflight/workers", WORLD, 0)
+        writer.add_scalar("preflight/workers", WORLD, state["new_updates"])
         writer.flush()
         return True
 
@@ -216,18 +275,24 @@ def main(arguments):
             rank_zero(context, record)
         return result
 
-    started = time.monotonic()
-    baseline = evaluate(True)
-    validation_seconds = max(180, (time.monotonic() - started) * 1.5)
-    selection = SmoothedSelection(baseline["validation"]["macro_spearman"])
-    state["best_metric"] = selection.best_smoothed
-    state["selection"] = selection.state()
-    rank_zero(context, lambda: write_json(root / "reports/baseline.json", baseline))
-    started = time.monotonic()
-    checkpoint(root, model, optimizer, state, sampler, config, best=True)
-    save_seconds = max(120, (time.monotonic() - started) * 1.5 + 15)
-    saved_step, validated_update, update_seconds = state["step"], 0, 30
-    early_stop, stop_reason = False, None
+    validation_seconds, save_seconds = 180, 120
+    if resume:
+        selection = SmoothedSelection.from_state(state["selection"])
+    else:
+        started = time.monotonic()
+        baseline = evaluate(True)
+        validation_seconds = max(180, (time.monotonic() - started) * 1.5)
+        selection = SmoothedSelection(baseline["validation"]["macro_spearman"])
+        state["best_metric"] = selection.best_smoothed
+        state["selection"] = selection.state()
+        rank_zero(context, lambda: write_json(root / "reports/baseline.json", baseline))
+        started = time.monotonic()
+        checkpoint(root, model, optimizer, state, sampler, config, best=True)
+        save_seconds = max(120, (time.monotonic() - started) * 1.5 + 15)
+    saved_step = state["step"]
+    validated_update = state.get("validated_update", state["new_updates"] // 50 * 50)
+    update_seconds = 30
+    early_stop, stop_reason = selection.stale_validations >= 6, None
 
     def materialize(entries):
         batch = batch_for(panels, entries, torch.device("cpu"), model_config.tickers)
@@ -281,6 +346,7 @@ def main(arguments):
                         print(json.dumps({"event": "validation", "arm": arguments.arm, **record}), flush=True)
                     rank_zero(context, record_validation)
                     validated_update = state["new_updates"]
+                    state["validated_update"] = validated_update
                 if state["step"] != saved_step:
                     started = time.monotonic()
                     checkpoint(root, model, optimizer, state, sampler, config, best=improved)
@@ -351,4 +417,5 @@ if __name__ == "__main__":
     parser.add_argument("--prepared", type=Path, required=True)
     parser.add_argument("--arm", choices=("A", "B"), required=True)
     parser.add_argument("--end-at", type=float, required=True)
+    parser.add_argument("--resume-arm-root", type=Path)
     main(parser.parse_args())

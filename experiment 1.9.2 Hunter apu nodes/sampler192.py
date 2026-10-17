@@ -72,6 +72,15 @@ class Sampler192(Sampler):
             connection.execute("CREATE TABLE counters (stratum INTEGER PRIMARY KEY, next_counter TEXT NOT NULL)")
         return cls(panels, originals, destination, arm, weights, seed, fixed)
 
+    @classmethod
+    def from_checkpoint(cls, panels, originals, snapshot, destination, arm, weights, seed=1337, fixed=None):
+        destination = Path(destination)
+        if destination.exists():
+            raise ValueError("Sampler destination already exists")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(snapshot, destination)
+        return cls(panels, originals, destination, arm, weights, seed, fixed)
+
     def _sample(self, task, visit, basket_number):
         possible = [index for index, maximum in enumerate(self.max_counts)
                     if maximum[LENGTHS.index(task.length), task.horizon - 1] >= task.basket]

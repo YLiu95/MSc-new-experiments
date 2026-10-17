@@ -68,7 +68,10 @@ def collect(base, mode):
                 manifest = verify(checkpoint, workers=4)
                 expected = {"config.json", "state.json", "weights-00.safetensors"}
                 if mode == "private":
-                    expected |= {"sampler.sqlite", "recovery-00.pt"} | {f"rng-{rank:04d}.pt" for rank in range(WORLD)}
+                    checkpoint_world = json.loads((checkpoint / "state.json").read_text())["world"]
+                    if checkpoint_world not in (12, WORLD):
+                        raise ValueError("Unexpected recovery worker layout")
+                    expected |= {"sampler.sqlite", "recovery-00.pt"} | {f"rng-{rank:04d}.pt" for rank in range(checkpoint_world)}
                 if set(manifest) != expected:
                     raise ValueError("Unexpected checkpoint contents or privacy boundary")
                 for name in expected | {"manifest.json", "COMPLETE"}:
@@ -77,7 +80,7 @@ def collect(base, mode):
             continue
         for name in ("history.jsonl", "validation.jsonl", "TRAINING_DONE.json", "config.json", "best.json", "latest.json"):
             add(f"reports/{JOB}/arm-{arm}/{name}", directory / name)
-        for name in ("preflight.json", "baseline.json", "protocol.json", "checkpoint_verification.json"):
+        for name in ("preflight.json", "baseline.json", "protocol.json", "checkpoint_verification.json", "resume.json"):
             add(f"reports/{JOB}/arm-{arm}/{name}", directory / "reports" / name)
         for path in (directory / "logs").rglob("*"):
             if path.name in ("stdout.log", "stderr.log", "error.json"):

@@ -7,6 +7,40 @@ baskets per worker and 64 two-basket accumulation microsteps. Arm B alone change
 market probabilities. `EXPERIMENT192_JOB` pins monitoring and publishing to the
 submitted job; batch workers receive this identity from `PBS_JOBID`.
 
+## Current Submission: 287977
+
+PBS accepted native batch job `287977.hunter-pbs01` and started it at
+2026-10-17 09:25:09 CEST, with six exclusive nodes, 96 CPUs per node and a
+24-hour deadline of 2026-10-18 09:25:09 CEST. The initial user-hold submission
+was rejected by site policy and created no job; only the normal submission succeeded.
+The source is `experiment192/source-six-batch-20261017-v1`, archive SHA256
+`a1ce8b76594342a98ae9ea9917aac4b309f39acfe095cf03aeac9c37bb8931ba`.
+All 31 tests passed on Hunter; 25 passed locally with six POSIX-only cases skipped.
+GitHub verified this exact deployed bundle at
+`d921f841dc43eefceff8b9bb40e505c3ccfac836`.
+
+Native startup was recorded at 09:25:25 CEST. Subsequent inspection found 12
+worker stderr files per arm and no repeated `pbs_attach` error. Hardware gates,
+initial checkpoints, actual updates and GPU utilization were not yet verified.
+The read-only GPU inspection did not run because its SSH shell lacked the
+`HUNTER_WORKSPACE` export; this was a diagnostic-command error, not a trainer error.
+
+Both authenticated Windows SSH connections then reset. No SSH processes or
+18772/18773 forwarding listeners remained; port 22 on hunter-login03 was unreachable
+from the current Wi-Fi route. No cached SSH agent or Windows VPN profile was
+available. FortiClient was running, but connectivity had not been restored.
+Do not infer the current PBS state from the cached running-state snapshot.
+The native batch job is independent of the Windows SSH sessions.
+
+The first new-job log backup is verified at Hugging Face commit
+`3e427127f682fd6d1d437c35b0b76f0249aa2b1e`, snapshot 09:25:49 CEST.
+The five-minute metrics relay remains configured to retry, but new cloud updates
+require the authenticated tunnel. Local TensorBoard remains on port 16006 and
+shows only its last synchronized data. The terminal allocation notification
+returned to this conversation; evidence is in
+`publication/notifications-287977/allocation.json`. The training-health notifier
+is still armed, but also requires the forwarding endpoint.
+
 ## Automatic Launch
 
 PBS starts `run.sh` itself, without an interactive allocation shell, compute SSH,

@@ -23,7 +23,7 @@ def write_json(path, value):
 def allocation(job):
     resources = job["Resource_List"]
     if int(resources["nodect"]) != NODES or resources["walltime"] != "24:00:00":
-        raise ValueError("Expected a six-node 24-hour allocation")
+        raise ValueError(f"Expected a {NODES}-node 24-hour allocation")
     if job["job_state"] != "R" or not job.get("stime") or not job.get("exec_host"):
         return None
     hosts = list(dict.fromkeys(part.split("/")[0] for part in job["exec_host"].split("+")))

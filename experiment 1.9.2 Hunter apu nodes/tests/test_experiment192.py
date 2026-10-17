@@ -15,9 +15,9 @@ def test_cosine_endpoints_and_monotonic_decay():
 
 def test_batch_contract_per_arm():
     assert GLOBAL_BATCH % (WORLD * MICROBATCH) == 0
-    assert WORLD == 12
-    assert GLOBAL_BATCH // WORLD == 128
-    assert GLOBAL_BATCH // (WORLD * MICROBATCH) == 64
+    assert WORLD == 32
+    assert GLOBAL_BATCH // WORLD == 48
+    assert GLOBAL_BATCH // (WORLD * MICROBATCH) == 24
 
 
 def test_market_weights_renormalize_only_feasible_markets():
@@ -54,6 +54,66 @@ def test_significant_smoothed_improvement_resets_patience():
         selection.observe(0.082)
     result = selection.observe(0.102)
     assert result["best"] and result["stale_validations"] == 0 and not result["stop"]
+
+
+def test_selection_resume_preserves_window_and_patience():
+    original = SmoothedSelection(0.08)
+    for score in (0.07, 0.08, 0.09, 0.085, 0.08):
+        original.observe(score)
+    resumed = SmoothedSelection.from_state(original.state())
+    assert resumed.state() == original.state()
+    for score in (0.082, 0.083, 0.12):
+        assert resumed.observe(score) == original.observe(score)
+
+
+def test_resume_preserves_state_and_rejects_contract_changes(tmp_path, monkeypatch):
+    import json
+    import train192
+    from ranker.data import write_json
+    source, destination = tmp_path / "old/arm-A", tmp_path / "new/arm-A"
+    checkpoint = source / "checkpoints/step_530"
+    checkpoint.mkdir(parents=True)
+    previous = {"experiment": "1.9.2", "arm": "A", "global_batch": 1536, "dp": 12}
+    current = {**previous, "dp": 32}
+    state = {"experiment": "1.9.2", "arm": "A", "world": 12, "step": 530, "new_updates": 202,
+             "scheduled": 415232, "selection": SmoothedSelection(0.08).state()}
+    write_json(checkpoint / "config.json", previous)
+    write_json(checkpoint / "state.json", state)
+    write_json(checkpoint / "manifest.json", {})
+    for label in ("best", "latest"):
+        write_json(source / f"{label}.json", {"directory": "checkpoints/step_530", "step": 530})
+    monkeypatch.setattr(train192, "verify", lambda *args, **kwargs: None)
+    with pytest.raises(ValueError, match="frozen training contract"):
+        train192.prepare_resume(source, destination, "A", {**current, "global_batch": 2048})
+    result = train192.prepare_resume(source, destination, "A", current)
+    assert result["state"] == {**state, "world": 32}
+    assert json.loads((checkpoint / "state.json").read_text())["world"] == 12
+    assert result["provenance"]["optimizer_preserved"] and result["provenance"]["sampler_preserved"]
+    assert (destination / "checkpoints/step_530/state.json").read_bytes() == (checkpoint / "state.json").read_bytes()
+    with pytest.raises(ValueError, match="already contains"):
+        train192.prepare_resume(source, destination, "A", current)
+
+
+def test_resume_restores_fp32_optimizer_and_learning_rate(tmp_path):
+    import torch
+    from types import SimpleNamespace
+    from train192 import load_parent
+    model = torch.nn.Linear(3, 1)
+    model.config = SimpleNamespace(seed=1337)
+    model.context = SimpleNamespace(dp_rank=0)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=0.1)
+    model(torch.ones(1, 3)).sum().backward()
+    optimizer.step()
+    saved = {name: value.detach().clone() for name, value in model.state_dict().items()}
+    torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict()}, tmp_path / "recovery-00.pt")
+    with torch.no_grad():
+        model.weight.zero_()
+    optimizer.state.clear()
+    load_parent(tmp_path, model, optimizer, 202)
+    for name, value in model.state_dict().items():
+        torch.testing.assert_close(value, saved[name], rtol=0, atol=0)
+    assert optimizer.param_groups[0]["lr"] == learning_rate(202)
+    assert all(value["step"].item() == 1 for value in optimizer.state.values())
 
 
 def test_parent_combination_rank_roundtrip_and_repeat_detection():
@@ -106,6 +166,13 @@ def test_ten_thousand_draws_exclude_holdout_and_parent_baskets(tmp_path, arm):
     identities = {entry.identity for entry in draws}
     assert len(identities) == 10000 and not identities & old
     assert sum(values["baskets"] for values in sampler.exposure().values()) == 10000
+    sampler.save(tmp_path / "resume.sqlite")
+    resumed = Sampler192.from_checkpoint(panels, originals, tmp_path / "resume.sqlite", tmp_path / "resumed.sqlite",
+                                         arm, [1, 3], fixed=task)
+    assert resumed.issued == sampler.issued
+    assert resumed.exposure() == sampler.exposure()
+    assert [entry.identity for entry in resumed.issue(48)] == [entry.identity for entry in sampler.issue(48)]
+    resumed.close()
     sampler.close()
 
 
@@ -155,27 +222,27 @@ def test_time_block_pairing_and_known_difference():
     assert result["time_block_bootstrap_95pct"] == pytest.approx([0.01, 0.01])
 
 
-def test_training_import_and_twelve_worker_distribution():
+def test_training_import_and_thirty_two_worker_distribution():
     from ranker.sampler import Assignment
     from train192 import distribute_assignments
     entries = [Assignment(0, index, (64, 1, 3), (0, 1, 2)) for index in range(GLOBAL_BATCH)]
     groups = distribute_assignments(entries, WORLD)
-    assert len(groups) == 12
-    assert all(len(rank) == 64 and sum(map(len, rank)) == 128 for rank in groups)
+    assert len(groups) == 32
+    assert all(len(rank) == 24 and sum(map(len, rank)) == 48 for rank in groups)
     assert sorted(entry.cutoff for rank in groups for batch in rank for entry in batch) == list(range(GLOBAL_BATCH))
 
 
 def test_queued_and_incomplete_running_allocation_waits():
     from control192 import allocation
-    job = {"Resource_List": {"nodect": 6, "walltime": "24:00:00"}, "job_state": "Q"}
+    job = {"Resource_List": {"nodect": 16, "walltime": "24:00:00"}, "job_state": "Q"}
     assert allocation(job) is None
     job["job_state"] = "R"
     assert allocation(job) is None
     job["stime"] = "Sat Oct 17 01:00:00 2026"
     assert allocation(job) is None
-    job["exec_host"] = "+".join(f"x1000c1s{index}b0n0/0" for index in range(6))
+    job["exec_host"] = "+".join(f"x1000c1s{index}b0n0/0" for index in range(16))
     timing = allocation(job)
-    assert len(timing["hosts"]) == 6
+    assert len(timing["hosts"]) == 16
     assert timing["end_epoch"] - timing["start_epoch"] == 86400
     assert timing["end_epoch"] - timing["stop_epoch"] == 120
 
@@ -239,18 +306,18 @@ def test_worker_shells_override_module_transport_after_environment_load():
     source = (Path(__file__).resolve().parents[1] / "run.sh").read_text()
     assert "pbs_attach" not in source
     assert "--no-python" not in source
-    assert "#PBS -l select=6:node_type=mi300a:ncpus=96:mpiprocs=1" in source
+    assert "#PBS -l select=16:node_type=mi300a:ncpus=96:mpiprocs=1" in source
     assert "#PBS -r n" in source and "PBS_BATCH" in source
-    assert "--nnodes=3 --nproc_per_node=4" in source
-    assert "--nnodes=6 --nproc_per_node=4" in source
-    shells = source.split("mpiexec -n 6")[1:]
+    assert "--nnodes=8 --nproc_per_node=4" in source
+    assert "--nnodes=16 --nproc_per_node=4" in source
+    shells = source.split("mpiexec -n 16")[1:]
     assert len(shells) == 2
     for shell in shells:
         assert shell.index("source ") < shell.index("export NCCL_NET=Socket") < shell.index("torch.distributed.run")
 
 
-@pytest.mark.parametrize("node_rank", range(6))
-def test_actual_worker_shell_assigns_two_disjoint_three_node_arms(tmp_path, node_rank):
+@pytest.mark.parametrize("node_rank", range(16))
+def test_actual_worker_shell_assigns_two_disjoint_eight_node_arms(tmp_path, node_rank):
     import os
     from pathlib import Path
     import subprocess
@@ -267,14 +334,16 @@ def test_actual_worker_shell_assigns_two_disjoint_three_node_arms(tmp_path, node
     shell = source.split("/usr/bin/bash -c '\n", 1)[1].split("\n' 2>&1", 1)[0]
     environment = {**os.environ, "HUNTER_WORKSPACE": str(tmp_path), "PMI_RANK": str(node_rank),
         "MASTER_A": "node-a", "MASTER_B": "node-b", "EXPERIMENT192_ROOT": str(tmp_path / "run"),
-        "TRAIN192_SOURCE": str(tmp_path), "PARENT192": "parent", "PREPARED192": "prepared", "TRAIN_END_AT": "2000000000"}
+        "TRAIN192_SOURCE": str(tmp_path), "PARENT192": "parent", "PREPARED192": "prepared", "TRAIN_END_AT": "2000000000",
+        "RESUME192_ROOT": str(tmp_path / "previous")}
     result = subprocess.run(["bash", "-c", shell], env=environment, check=True, capture_output=True, text=True)
     lines = result.stdout.splitlines()
     assert lines[0] == "Socket"
-    assert "--nnodes=3" in lines and "--nproc_per_node=4" in lines
-    assert f"--node_rank={node_rank % 3}" in lines
-    assert f"--master_addr={'node-a' if node_rank < 3 else 'node-b'}" in lines
-    assert lines[lines.index("--arm") + 1] == ("A" if node_rank < 3 else "B")
+    assert "--nnodes=8" in lines and "--nproc_per_node=4" in lines
+    assert f"--node_rank={node_rank % 8}" in lines
+    assert f"--master_addr={'node-a' if node_rank < 8 else 'node-b'}" in lines
+    assert lines[lines.index("--arm") + 1] == ("A" if node_rank < 8 else "B")
+    assert lines[lines.index("--resume-arm-root") + 1] == str(tmp_path / "previous" / ("arm-A" if node_rank < 8 else "arm-B"))
 
 
 def test_allocation_notification_retries_transient_disconnect(tmp_path, monkeypatch, capsys):

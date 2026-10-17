@@ -7,8 +7,8 @@ import numpy as np
 
 
 JOB = os.environ.get("EXPERIMENT192_JOB", "unsubmitted")
-NODES = 6
-WORLD = 12
+NODES = 16
+WORLD = 32
 GLOBAL_BATCH = 1536
 MICROBATCH = 2
 UPDATE_BUDGET = 1000
@@ -44,6 +44,19 @@ class SmoothedSelection:
         self.best_smoothed = float(baseline)
         self.patience_reference = float(baseline)
         self.stale_validations = 0
+
+    @classmethod
+    def from_state(cls, state):
+        values = state["values"]
+        if not 1 <= len(values) <= 5 or not all(math.isfinite(value) for value in values):
+            raise ValueError("Invalid saved selection window")
+        result = cls(state["best_smoothed"])
+        result.values = deque(values, maxlen=5)
+        result.patience_reference = state["patience_reference"]
+        result.stale_validations = state["stale_validations"]
+        if not math.isfinite(result.best_smoothed) or not math.isfinite(result.patience_reference) or result.stale_validations < 0:
+            raise ValueError("Invalid saved selection state")
+        return result
 
     def observe(self, score):
         if not math.isfinite(score):

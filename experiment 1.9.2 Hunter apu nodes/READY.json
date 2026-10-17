@@ -1,1 +1,28 @@
-{"tests_passed": true, "local_passed": 25, "native_bash_cases_pending": 6, "files": {"audit192.py": "1ff74896cfdb6fa2c979718af4676d632c189619e658f61afbfd40d9b65533ae", "control192.py": "83745caebbf287f2cda190d151bee69355a4a6e4400d2ac52a4c2dcc4cd45f01", "evaluate192.py": "1c123623b9f7c68fa0d4f4b586faa116ac1ebb0ba6dd3fc7e3297fb4e6d2288f", "EXPERIMENT_PLAN.md": "477b914d54d6cd051d29a15c567841bd892b7578277d931881d5c3f3bf11d62b", "final192.py": "8850bf1fb52ebfd1daf195a442b340303150e8874d41440d2d20702626192793", "model192.py": "d59cde9fcea3013d3a224fa9e922f611ad745855c3c07415454ad3d902769ef5", "MODEL_CARD.md": "41c8493d7439a30941f293c4ccf1675f68cc610826621de76ec154b9a039c4fd", "ops192.py": "dfc5eb524e7ba0557d0a48882bd8211eb1164037e0fbcda324da8c5e7a46a9a0", "policy192.py": "88030dcd3da703acf53ac55fe81fe64ebddcffab7c832e0a95027a52704bf272", "prepare192.py": "956138b469d42b44805ac01f868d8ddd8e042e163330e498746d72c9d0c89e9d", "publish192.py": "eac9e0f3befc14351d0f76c2da0645a590cc3bd639f8e76bc83a023530c7b1ad", "README.md": "286f9bd7dc7d9bfb2d3484aa4c6949f0596d1ced58b7eb102503880e66d3216b", "run.sh": "05b94d518fb800037a7ab8fc030e45accb7922c4f24a156e118d84e6db2d1313", "sampler192.py": "31db4ba03e24a9e66fbb74d4cbb5a7015476fd60baabb08561313b8fcfd7f703", "train192.py": "f76f4be3babcfd2eaeeeb54ff9d622af33c8befb98aedbb84ce2bc86082eee39", "tests/test_experiment192.py": "5927ca013bbf133ccfa6eea95895664a260ca1d04a79cf6fc393d5c87ed98818", "train191.py": "ef5fe4b5babc300e626d6a724b115a09a8e834d78486c6213a11943538cafae0", "diagnose191.py": "be9daac23ac80847ae4fc9ccd78af8433eb6f0e8572659d95e5eae0795ef82a2", "train19.py": "86cd329c0db76ff851c136f735f1174b4d6e1ae8615bbea25656c9741c85681e", "publish19.py": "9e68e7baa77d2eaaef9d32a01b98a0c99dbde710934fbe6583e3a6c3b634394a", "wake192.py": "8adace28ebf16a8f9762022beb37fc3f629350816569bd6cc3c1c1ac6fbad1ea"}}
+{
+  "tests_passed": true,
+  "local_tests": 28,
+  "native_tests_pending": 16,
+  "files": {
+    "audit192.py": "e9d4f72cab46bf4a1578f741d2a46af994c2f9d5e7cfe9a4cfc6b21d15bfc30c",
+    "control192.py": "9cddd7aa8fb924cf7f38390e783f1ba78f50aad432d60d83c867a66eef3a1fbd",
+    "evaluate192.py": "0affb5f97a7782286a5435b58632695e52b17d84b36018c76babc02bf7309a6a",
+    "EXPERIMENT_PLAN.md": "9aae867eebd281c692c22967f97149feb7660526e57ca0c9574edd8a74ed99ce",
+    "final192.py": "d46640f0a93dfe4567817d8866ae5fa9c407e07201bed35664b83213e4a5de88",
+    "model192.py": "b387cfe6dc85a74aa4957ccb4c5ded157439901d04727f017f46af8ef35ac0da",
+    "MODEL_CARD.md": "f8156fb169efeac8b190c87ed9afd0f822c0e76039ac6232ff48c32db8794f9f",
+    "ops192.py": "2ddf72e115b371bfef9ea891317f0dd066d1b855ca097b88f1095db8806ec513",
+    "policy192.py": "17c9564717b9f3b7de319f99ce5722b41d6444e95f4de7bb264fa7d58f72afd0",
+    "prepare192.py": "e5d74178af4087b1c7e9ddba7c654d830ebe19bc3201827fdccf9262d30bd723",
+    "publish192.py": "a130cd8cb0e5e76325d8cea56872597007f93dd19ce69de1d16c3305a59490b1",
+    "README.md": "2459ab13632c3ee4de3344e6b6e35912a573447b1a32fed9f4367c9f5fb8c47f",
+    "run.sh": "0c37275bf21c7caeebfd463bc4118baa2c5cf9878297e07e2dd518a52e197ab1",
+    "sampler192.py": "79ffdbab6ab197c05689d2f5fda3da4240a98b468c87cb7c50646ec8cedf064d",
+    "train192.py": "52f13cbf4fdf04e75bb06a9bdf49bb1b6e50126d955641b2ec4be58a3111c1e9",
+    "tests/test_experiment192.py": "817b9766bb741c3156d03a72f2164e1d860cdc5d96d6eab951a808351674fe8d",
+    "train191.py": "ef5fe4b5babc300e626d6a724b115a09a8e834d78486c6213a11943538cafae0",
+    "diagnose191.py": "be9daac23ac80847ae4fc9ccd78af8433eb6f0e8572659d95e5eae0795ef82a2",
+    "train19.py": "86cd329c0db76ff851c136f735f1174b4d6e1ae8615bbea25656c9741c85681e",
+    "publish19.py": "9e68e7baa77d2eaaef9d32a01b98a0c99dbde710934fbe6583e3a6c3b634394a",
+    "wake192.py": "9636f16f9ecd3ac8d33031dc2e2a558015c471bb54125c72e69f3410745c156f"
+  }
+}
