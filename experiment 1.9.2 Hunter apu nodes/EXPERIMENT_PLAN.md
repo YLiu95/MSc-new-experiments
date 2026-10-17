@@ -30,7 +30,7 @@ regime change after 2018? Existing checkpoints cannot answer it, so this run bui
 
 ## 3. Design
 
-Two arms run at the same time from step 328, each on 6 nodes (24 MI300As). They share the same seed,
+Two arms run at the same time from step 328, each on 3 nodes (12 MI300As). They share the same seed,
 global batch, LR schedule, update budget and evaluation.
 
 | Arm | Stock IDs | Market sampling |
@@ -43,19 +43,23 @@ market choice; per-basket RNG seeding is unchanged.
 
 | Setting | Value |
 |---|---|
-| Global batch / microbatch / world per arm | 1536 / 2 / 24 (64 baskets, 32 microsteps per rank) |
+| Global batch / microbatch / world per arm | 1536 / 2 / 12 (128 baskets, 64 microsteps per rank) |
 | Update budget | 1,000 updates (1.536M samples) per arm, unless early-stopped |
 | LR | Cosine from 6e-5 to 6e-6 over the budget; no warmup (Adam state preserved) |
 | Optimizer / precision / dropout | Unchanged from 1.9.1 (AdamW wd 0.1, BF16 compute, FP32 master, dropout 0.15) |
 | Sampler ledger | Restore parent 328 ledger (prevents exact-basket repeats) |
-| Expected duration | About 3–4 h per arm at about 130 samples/s, plus gates and evaluation |
+| Expected duration | Must be measured on three nodes per arm; the scheduler's 24-hour deadline is authoritative |
 
 ## 4. Data Splits
 
-Operational amendment: the original allocation ended during preparation. The user requested automatic
-launch on the newly queued 12-node, 24-hour job `287925.hunter-pbs01`, without further clarification
-prompts. Use six disjoint nodes per arm, hardware gates on all 24 workers per arm, and scheduler-derived
-deadlines. Preserve the global batch, seed, LR and update budget. Never submit or delete allocations.
+Operational amendment, 2026-10-17: job `287925.hunter-pbs01` ended before any update.
+The user authorized requesting six nodes for 24 hours and replacement allocations if needed.
+Use a native PBS batch job with three disjoint nodes and 12 GPU workers per arm,
+scheduler-derived deadlines, and unchanged global batch, seed, LR and update budget.
+Per-rank RNG streams are reseeded for the new world size, identically across arms;
+this is not bitwise continuation of the former topology. Preserve old job artifacts.
+Do not open new Copilot sessions or invoke Copilot CLI. Use terminal notifications
+associated with the current conversation; idle-chat activation remains client-dependent.
 
 | Split | Definition | Use |
 |---|---|---|
@@ -131,12 +135,12 @@ checkpoint.
 
 | # | Change | Location |
 |---|---|---|
-| 1 | `train192.py` from `train191.py`: `--arm {A,B}`, `WORLD=24`, budgeted cosine LR replacing `capped_learning_rate`, early stopping in the rank-0 decision path | `train191.py` |
+| 1 | `train192.py` from `train191.py`: `--arm {A,B}`, `WORLD=12`, budgeted cosine LR replacing `capped_learning_rate`, early stopping in the rank-0 decision path | `train191.py` |
 | 2 | Pass `identity_masked=True` in the training forward (`update`) and in validation | `train191.py` `update`; `ranking17/train.py` `validate` |
 | 3 | Sampler options: market weights (`generator.choice(possible, p=...)` restricted to feasible markets and renormalised) and held-out stock exclusion from `eligible` | `ranker/sampler.py` `Sampler._sample` |
 | 4 | Deterministic stock-holdout list, hashed and recorded in the run config | New helper; config report |
 | 5 | Cohort builders for training-era included/held-out and sealed test | Reuse 1.9.1 diagnostic code |
-| 6 | Run two arms on one 12-node allocation (6 nodes each), separate artifact roots, locks and log-backup jobs | `run.sh`, launcher |
+| 6 | Run two arms on one 6-node allocation (3 nodes each), separate artifact roots, locks and log-backup jobs | `run.sh`, launcher |
 
 **Required tests before launch:**
 - IDs are hidden in both training and evaluation (assert all `ticker_ids` map to the unknown ID inside
@@ -145,9 +149,9 @@ checkpoint.
 - Held-out stocks never appear in sampled baskets (property test over at least 10k draws).
 - LR schedule endpoints and monotonic decay.
 - Early-stop trigger on a synthetic score sequence.
-- 1536-basket batch divides evenly across 24 workers.
+- 1536-basket batch divides evenly across 12 workers.
 - Parent manifest and payload verification.
-- Full backward/Adam hardware gate on 24 GPUs per arm.
+- Full backward/Adam hardware gate on 12 GPUs per arm.
 - Test-cohort access is blocked until the final evaluation flag is set.
 
 ## 10. Deliverables

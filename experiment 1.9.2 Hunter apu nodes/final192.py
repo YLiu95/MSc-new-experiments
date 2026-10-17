@@ -34,7 +34,7 @@ def main(arguments):
     torch.set_num_threads(4)
     context = ParallelContext.initialize(1)
     if context.dp_size != WORLD * 2:
-        raise ValueError("Final evaluation requires all 48 allocated GPU workers")
+        raise ValueError(f"Final evaluation requires all {WORLD * 2} allocated GPU workers")
     protocol = rank_zero(context, lambda: load_protocol(arguments.prepared))
     selection = rank_zero(context, lambda: require_final_selection(arguments.root, arguments.final_evaluation, protocol))
     enough_time = rank_zero(context, lambda: time.time() + 3600 < arguments.end_at - 120)

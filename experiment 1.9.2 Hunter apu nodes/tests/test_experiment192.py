@@ -15,8 +15,9 @@ def test_cosine_endpoints_and_monotonic_decay():
 
 def test_batch_contract_per_arm():
     assert GLOBAL_BATCH % (WORLD * MICROBATCH) == 0
-    assert GLOBAL_BATCH // WORLD == 64
-    assert GLOBAL_BATCH // (WORLD * MICROBATCH) == 32
+    assert WORLD == 12
+    assert GLOBAL_BATCH // WORLD == 128
+    assert GLOBAL_BATCH // (WORLD * MICROBATCH) == 64
 
 
 def test_market_weights_renormalize_only_feasible_markets():
@@ -154,38 +155,53 @@ def test_time_block_pairing_and_known_difference():
     assert result["time_block_bootstrap_95pct"] == pytest.approx([0.01, 0.01])
 
 
-def test_training_import_and_sixteen_worker_distribution():
+def test_training_import_and_twelve_worker_distribution():
     from ranker.sampler import Assignment
     from train192 import distribute_assignments
     entries = [Assignment(0, index, (64, 1, 3), (0, 1, 2)) for index in range(GLOBAL_BATCH)]
     groups = distribute_assignments(entries, WORLD)
-    assert len(groups) == 24
-    assert all(len(rank) == 32 and sum(map(len, rank)) == 64 for rank in groups)
+    assert len(groups) == 12
+    assert all(len(rank) == 64 and sum(map(len, rank)) == 128 for rank in groups)
     assert sorted(entry.cutoff for rank in groups for batch in rank for entry in batch) == list(range(GLOBAL_BATCH))
 
 
 def test_queued_and_incomplete_running_allocation_waits():
     from control192 import allocation
-    job = {"Resource_List": {"nodect": 12, "walltime": "24:00:00"}, "job_state": "Q"}
+    job = {"Resource_List": {"nodect": 6, "walltime": "24:00:00"}, "job_state": "Q"}
     assert allocation(job) is None
     job["job_state"] = "R"
     assert allocation(job) is None
     job["stime"] = "Sat Oct 17 01:00:00 2026"
     assert allocation(job) is None
-    job["exec_host"] = "+".join(f"x1000c1s{index}b0n0/0" for index in range(12))
+    job["exec_host"] = "+".join(f"x1000c1s{index}b0n0/0" for index in range(6))
     timing = allocation(job)
-    assert len(timing["hosts"]) == 12
+    assert len(timing["hosts"]) == 6
     assert timing["end_epoch"] - timing["start_epoch"] == 86400
     assert timing["end_epoch"] - timing["stop_epoch"] == 120
 
 
-def test_launch_is_job_bound_and_duplicate_guarded(tmp_path):
-    from control192 import launch_command
-    command = launch_command(tmp_path, tmp_path / "source", tmp_path / "run", {"end_epoch": 2000000000})
-    assert "start.lock" in command and "|| exit 0" in command
-    assert "pbs_attach -j 287925.hunter-pbs01 -s" in command
-    assert "TRAIN_END_AT=2000000000" in command
-    assert "qsub" not in command and "qdel" not in command
+def test_native_batch_start_is_job_bound_and_duplicate_guarded(tmp_path, monkeypatch):
+    import control192
+    monkeypatch.setattr(control192, "JOB", "123.hunter-pbs01")
+    monkeypatch.setattr(control192, "validate_source", lambda *args: None)
+    monkeypatch.setattr(control192, "scheduler_job", lambda: {})
+    monkeypatch.setattr(control192, "allocation", lambda job: {"end_epoch": 2000000000, "stop_epoch": 1999999880})
+    monkeypatch.setattr(control192.time, "time", lambda: 1900000000)
+    with pytest.raises(ValueError, match="native PBS"):
+        control192.batch_start(tmp_path, tmp_path / "source")
+    monkeypatch.setenv("PBS_JOBID", "123.hunter-pbs01")
+    monkeypatch.setenv("PBS_ENVIRONMENT", "PBS_BATCH")
+    assert control192.batch_start(tmp_path, tmp_path / "source") == 2000000000
+    with pytest.raises(FileExistsError):
+        control192.batch_start(tmp_path, tmp_path / "source")
+
+
+def test_batch_failure_is_reported_immediately(tmp_path):
+    import json
+    import control192
+    control192.batch_exit(tmp_path, 1)
+    path = tmp_path / "experiment192/artifacts" / f"job-{control192.JOB}" / "control/failure.json"
+    assert json.loads(path.read_text())["exit_code"] == 1
 
 
 def test_public_logs_include_both_arms_and_exclude_private_files(tmp_path):
@@ -221,10 +237,44 @@ def test_backup_cadence_starts_immediately_and_finishes_after_final_upload(tmp_p
 def test_worker_shells_override_module_transport_after_environment_load():
     from pathlib import Path
     source = (Path(__file__).resolve().parents[1] / "run.sh").read_text()
-    shells = source.split("mpiexec -n 12")[1:]
+    assert "pbs_attach" not in source
+    assert "--no-python" not in source
+    assert "#PBS -l select=6:node_type=mi300a:ncpus=96:mpiprocs=1" in source
+    assert "#PBS -r n" in source and "PBS_BATCH" in source
+    assert "--nnodes=3 --nproc_per_node=4" in source
+    assert "--nnodes=6 --nproc_per_node=4" in source
+    shells = source.split("mpiexec -n 6")[1:]
     assert len(shells) == 2
     for shell in shells:
         assert shell.index("source ") < shell.index("export NCCL_NET=Socket") < shell.index("torch.distributed.run")
+
+
+@pytest.mark.parametrize("node_rank", range(6))
+def test_actual_worker_shell_assigns_two_disjoint_three_node_arms(tmp_path, node_rank):
+    import os
+    from pathlib import Path
+    import subprocess
+    if os.name != "posix":
+        pytest.skip("Execute the native Bash worker check on Hunter")
+    environment_script = tmp_path / "source-six-node-20261014/env.sh"
+    environment_script.parent.mkdir()
+    environment_script.write_text("export NCCL_NET=AWS_Libfabric\n")
+    executable = tmp_path / "venv/bin/python"
+    executable.parent.mkdir(parents=True)
+    executable.write_text('#!/bin/bash\nprintf "%s\\n" "$NCCL_NET" "$@"\n')
+    executable.chmod(0o700)
+    source = (Path(__file__).resolve().parents[1] / "run.sh").read_text()
+    shell = source.split("/usr/bin/bash -c '\n", 1)[1].split("\n' 2>&1", 1)[0]
+    environment = {**os.environ, "HUNTER_WORKSPACE": str(tmp_path), "PMI_RANK": str(node_rank),
+        "MASTER_A": "node-a", "MASTER_B": "node-b", "EXPERIMENT192_ROOT": str(tmp_path / "run"),
+        "TRAIN192_SOURCE": str(tmp_path), "PARENT192": "parent", "PREPARED192": "prepared", "TRAIN_END_AT": "2000000000"}
+    result = subprocess.run(["bash", "-c", shell], env=environment, check=True, capture_output=True, text=True)
+    lines = result.stdout.splitlines()
+    assert lines[0] == "Socket"
+    assert "--nnodes=3" in lines and "--nproc_per_node=4" in lines
+    assert f"--node_rank={node_rank % 3}" in lines
+    assert f"--master_addr={'node-a' if node_rank < 3 else 'node-b'}" in lines
+    assert lines[lines.index("--arm") + 1] == ("A" if node_rank < 3 else "B")
 
 
 def test_allocation_notification_retries_transient_disconnect(tmp_path, monkeypatch, capsys):
@@ -239,7 +289,7 @@ def test_allocation_notification_retries_transient_disconnect(tmp_path, monkeypa
     monkeypatch.setattr(publish192.threading.Event, "wait", lambda self, duration: waits.append(duration))
     publish192.notify("http://local")
     assert get.call_count == 2 and waits == [30]
-    assert "ALLOCATION_NOTIFICATION" in capsys.readouterr().out
+    assert "CURRENT_SESSION_NOTIFICATION" in capsys.readouterr().out
 
 
 def test_allocation_notification_rejects_stale_heartbeat(monkeypatch):
@@ -253,75 +303,55 @@ def test_allocation_notification_rejects_stale_heartbeat(monkeypatch):
         publish192.notify("http://local")
 
 
-def test_copilot_wakeup_dispatches_agent_once(tmp_path, monkeypatch):
+def test_current_session_notification_never_invokes_cli(tmp_path, monkeypatch):
+    import json
     import wake192
+    from pathlib import Path
     from unittest.mock import Mock
-    completed = Mock(returncode=0, stdout="", stderr="")
-    run = Mock(return_value=completed)
-    monkeypatch.setattr(wake192.subprocess, "run", run)
-    status = {"job": wake192.JOB, "experiment": "1.9.2", "state": "R"}
-    request_id = wake192.dispatch(tmp_path, "code.cmd", status)
-    assert request_id
-    command = run.call_args.args[0]
-    assert command[:6] == ["code.cmd", "chat", "--mode", "agent", "--reuse-window", "--add-file"]
-    assert run.call_args.kwargs["cwd"] == wake192.WORKSPACE
-    assert "Never submit, delete or replace an allocation" in command[-1]
-    assert wake192.dispatch(tmp_path, "code.cmd", status) is None
-    assert run.call_count == 1
+    notify = Mock(return_value={"state": "R"})
+    monkeypatch.setattr(wake192, "notify", notify)
+    wake192.watch(tmp_path, "http://local")
+    notify.assert_called_once_with("http://local", "allocation")
+    assert json.loads((tmp_path / "allocation.json").read_text())["state"] == "notified"
+    assert "subprocess" not in Path(wake192.__file__).read_text()
+    assert not (tmp_path / "allocation.lock").exists()
 
 
-def test_copilot_wakeup_rejects_queued_or_wrong_job(tmp_path):
-    import wake192
-    with pytest.raises(ValueError, match="No allocation"):
-        wake192.dispatch(tmp_path, "code.cmd", {"job": wake192.JOB, "experiment": "1.9.2", "state": "Q"})
-    with pytest.raises(ValueError, match="Wrong experiment"):
-        wake192.dispatch(tmp_path, "code.cmd", {"job": "other", "experiment": "1.9.2", "state": "R"})
-    assert not (tmp_path / "dispatch.lock").exists()
+def test_training_notification_requires_both_arms_checkpoints_and_updates(monkeypatch):
+    import publish192
+    from unittest.mock import Mock
+    replies = []
+    for updates in (0, 3):
+        response = Mock()
+        response.json.return_value = {"job": publish192.JOB, "experiment": "1.9.2", "state": "R", "time": 100,
+            "arms": {arm: {"preflight_passed": True, "initial_checkpoint_complete": updates == 3,
+                            "new_updates": updates} for arm in ("A", "B")}}
+        replies.append(response)
+    monkeypatch.setattr(publish192.requests, "get", Mock(side_effect=replies))
+    monkeypatch.setattr(publish192.time, "time", lambda: 100)
+    waits = []
+    monkeypatch.setattr(publish192.threading.Event, "wait", lambda self, duration: waits.append(duration))
+    assert publish192.notify("http://local", "training")["arms"]["A"]["new_updates"] == 3
+    assert waits == [30]
 
 
-def test_copilot_wakeup_requires_matching_acknowledgement(tmp_path, monkeypatch):
+def test_notification_records_failure_without_creating_agent(tmp_path, monkeypatch):
     import json
     import wake192
     from unittest.mock import Mock
-    monkeypatch.setattr(wake192.subprocess, "run", Mock(return_value=Mock(returncode=0, stdout="", stderr="")))
-    request_id = wake192.dispatch(tmp_path, "code.cmd", {"job": wake192.JOB, "experiment": "1.9.2", "state": "Q"}, probe=True)
-    wake192.write_record(tmp_path / "agent-started.json", {"job": wake192.JOB, "request_id": request_id, "status": "agent_started"})
-    wake192.wait_for_acknowledgement(tmp_path, request_id)
-    assert json.loads((tmp_path / "wake-status.json").read_text())["state"] == "acknowledged"
+    monkeypatch.setattr(wake192, "notify", Mock(side_effect=RuntimeError("batch failed")))
+    with pytest.raises(RuntimeError, match="batch failed"):
+        wake192.watch(tmp_path, "http://local", "training")
+    assert json.loads((tmp_path / "training.json").read_text())["state"] == "failed"
+    assert not (tmp_path / "training.lock").exists()
 
 
-def test_copilot_wakeup_waits_for_allocation_then_hands_off(tmp_path, monkeypatch):
-    import wake192
-    from unittest.mock import Mock
-    replies = []
-    for state in ("Q", "R"):
-        response = Mock()
-        response.json.return_value = {"job": wake192.JOB, "experiment": "1.9.2", "state": state, "time": 100}
-        replies.append(response)
-    monkeypatch.setattr(wake192.requests, "get", Mock(side_effect=replies))
-    monkeypatch.setattr(wake192.time, "time", lambda: 100)
-    waits = []
-    monkeypatch.setattr(wake192.threading.Event, "wait", lambda self, duration: waits.append(duration))
-    dispatch = Mock(return_value="request")
-    acknowledge = Mock()
-    monkeypatch.setattr(wake192, "dispatch", dispatch)
-    monkeypatch.setattr(wake192, "wait_for_acknowledgement", acknowledge)
-    wake192.watch(tmp_path, "code.cmd", "http://local")
-    assert waits == [15] and dispatch.call_count == 1
-    assert dispatch.call_args.args[2]["state"] == "R"
-    acknowledge.assert_called_once_with(tmp_path, "request")
-    assert not (tmp_path / "watch.lock").exists()
-
-
-def test_copilot_wakeup_hands_off_stale_controller(tmp_path, monkeypatch):
-    import wake192
+def test_export_relay_stops_when_allocation_ends_without_checkpoints(tmp_path, monkeypatch):
+    import publish192
     from unittest.mock import Mock
     response = Mock()
-    response.json.return_value = {"job": wake192.JOB, "experiment": "1.9.2", "state": "Q", "time": 100}
-    monkeypatch.setattr(wake192.requests, "get", Mock(return_value=response))
-    monkeypatch.setattr(wake192.time, "time", lambda: 281)
-    dispatch = Mock(return_value="request")
-    monkeypatch.setattr(wake192, "dispatch", dispatch)
-    monkeypatch.setattr(wake192, "wait_for_acknowledgement", Mock())
-    wake192.watch(tmp_path, "code.cmd", "http://local")
-    assert "heartbeat" in dispatch.call_args.args[2]["failure"]["reason"]
+    response.json.return_value = {"job": publish192.JOB, "experiment": "1.9.2", "finished": True}
+    monkeypatch.setattr(publish192.requests, "get", Mock(return_value=response))
+    monkeypatch.setattr(publish192.requests, "post", Mock(return_value=Mock()))
+    monkeypatch.setattr(publish192.shared, "snapshot_at", Mock(return_value={"experiment": "1.9.2", "frozen_at": "now", "files": {}}))
+    assert publish192.publish_once(tmp_path, "http://local", "exports") is True

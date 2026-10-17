@@ -21,9 +21,10 @@ import publish19 as shared
 from ranker.data import write_json
 from ranker.publish import git_blob
 from ranking17.recovery import digest, verify
+from policy192 import JOB as ALLOCATION_JOB, WORLD
 
 
-JOB = "job-287925.hunter-pbs01"
+JOB = f"job-{ALLOCATION_JOB}"
 HF = "YL95/experiment-1.9.2-hunter-apu-nodes"
 PRIVATE_HF = "YL95/experiment-1.9.2-hunter-recovery"
 SOURCE = Path(__file__).resolve().parent
@@ -67,7 +68,7 @@ def collect(base, mode):
                 manifest = verify(checkpoint, workers=4)
                 expected = {"config.json", "state.json", "weights-00.safetensors"}
                 if mode == "private":
-                    expected |= {"sampler.sqlite", "recovery-00.pt"} | {f"rng-{rank:04d}.pt" for rank in range(24)}
+                    expected |= {"sampler.sqlite", "recovery-00.pt"} | {f"rng-{rank:04d}.pt" for rank in range(WORLD)}
                 if set(manifest) != expected:
                     raise ValueError("Unexpected checkpoint contents or privacy boundary")
                 for name in expected | {"manifest.json", "COMPLETE"}:
@@ -86,7 +87,7 @@ def collect(base, mode):
     if mode == "metrics":
         for name in ("job.log", "final-evaluation.log", "EXPERIMENT_DONE.json", "RESULTS.md"):
             add(f"reports/{JOB}/{name}", root / name)
-        for name in ("watch.log", "status.json", "deadlines.json", "launch.json", "failure.json", "launch.log", "allocation-ended.json"):
+        for name in ("watch.log", "status.json", "deadlines.json", "launch.json", "failure.json", "launch.log", "allocation-ended.json", "batch-exit.json"):
             add(f"reports/{JOB}/control/{name}", root / "control" / name)
         for name in ("exposure.json", "universe.json"):
             add(f"reports/{JOB}/audits/{name}", root / "audits" / name)
@@ -184,7 +185,7 @@ def publish_once(root, endpoint, mode):
         raise ValueError("Expected an immutable Experiment 1.9.2 snapshot")
     if mode == "exports" and not all(f"arm-{arm}/{label}/weights-00.safetensors" in snapshot["files"] for arm in ("A", "B") for label in ("best", "latest")):
         requests.post(route + "/release", timeout=60).raise_for_status()
-        return False
+        return current["finished"]
     paths = {}
     if mode != "private":
         paths["README.md"] = SOURCE / "MODEL_CARD.md"
@@ -232,7 +233,10 @@ def relay(root, endpoint, mode, once=False):
         lock.rmdir()
 
 
-def notify(endpoint):
+def notify(endpoint, phase="allocation"):
+    if phase not in ("allocation", "training", "completion"):
+        raise ValueError("Unknown notification phase")
+    previous = None
     while True:
         try:
             response = requests.get(endpoint + "/status", timeout=30)
@@ -248,10 +252,19 @@ def notify(endpoint):
             raise RuntimeError(json.dumps(current["failure"]))
         if not current.get("finished") and time.time() - current.get("time", 0) > 180:
             raise RuntimeError("Hunter watcher heartbeat is more than three minutes old")
-        if current.get("state") == "R" or current.get("finished"):
-            print(json.dumps({"event": "ALLOCATION_NOTIFICATION", **current}), flush=True)
-            return
-        print(json.dumps({"event": "queued", "job": JOB, "time": time.time()}), flush=True)
+        arms = current.get("arms", {})
+        healthy = all(arms.get(arm, {}).get("preflight_passed") and
+                      arms.get(arm, {}).get("initial_checkpoint_complete") and
+                      arms.get(arm, {}).get("new_updates", 0) >= 3 for arm in ("A", "B"))
+        if current.get("finished") or (phase == "allocation" and current.get("state") == "R") or (phase == "training" and healthy):
+            if phase == "training" and not healthy:
+                raise RuntimeError("Allocation ended before both arms passed startup: " + json.dumps(current))
+            print(json.dumps({"event": "CURRENT_SESSION_NOTIFICATION", "phase": phase, **current}), flush=True)
+            return current
+        fingerprint = (current.get("state"), tuple(arms.get(arm, {}).get("new_updates", 0) for arm in ("A", "B")))
+        if fingerprint != previous:
+            print(json.dumps({"event": "monitor_wait", "phase": phase, "job": JOB, "state": current.get("state"), "arms": arms}), flush=True)
+            previous = fingerprint
         threading.Event().wait(30)
 
 
@@ -299,13 +312,14 @@ if __name__ == "__main__":
     parser.add_argument("--credentials", type=Path)
     parser.add_argument("--archive", type=Path)
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--phase", choices=("allocation", "training", "completion"), default="allocation")
     arguments = parser.parse_args()
     if arguments.credentials:
         load_dotenv(arguments.credentials)
     if arguments.action == "serve":
         serve(arguments.root, arguments.socket)
     elif arguments.action == "notify":
-        notify(arguments.endpoint)
+        notify(arguments.endpoint, arguments.phase)
     elif arguments.action == "source":
         publish_source(arguments.root, arguments.archive)
     else:

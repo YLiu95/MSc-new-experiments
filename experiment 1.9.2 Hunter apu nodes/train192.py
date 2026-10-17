@@ -116,11 +116,11 @@ def main(arguments):
     torch.set_num_threads(4)
     context = ParallelContext.initialize(1)
     if context.dp_size != WORLD or torch.cuda.device_count() != 4:
-        raise RuntimeError("Each arm requires six nodes with four GPU workers each")
+        raise RuntimeError("Each arm requires three nodes with four GPU workers each")
     probe = torch.tensor(context.rank + 1, device=context.device)
     dist.all_reduce(probe)
     if probe.item() != WORLD * (WORLD + 1) // 2:
-        raise RuntimeError("24-worker RCCL collective failed")
+        raise RuntimeError(f"{WORLD}-worker RCCL collective failed")
     torch.use_deterministic_algorithms(True)
     for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGUSR1):
         signal.signal(signum, request_stop)
@@ -159,7 +159,7 @@ def main(arguments):
     started = time.monotonic()
     update(model, wrapped, optimizer, [synthetic], 0)
     gate_seconds = time.monotonic() - started
-    memory = memory_record(context, "24_gpu_hidden_worst_microbatch_backward_adam")
+    memory = memory_record(context, f"{WORLD}_gpu_hidden_worst_microbatch_backward_adam")
     if any(record["peak_reserved_bytes"] > 0.9 * record["hip_total_bytes"] for record in memory):
         raise RuntimeError("Worst-case microbatch exceeds the 90 percent memory gate")
     del synthetic

@@ -6,8 +6,8 @@ tags:
 ---
 # Experiment 1.9.2
 
-Two continuations of Experiment 1.9 step 328, each using six Hunter MI300A nodes
-and 24 GPU workers. Both hide stock identity throughout training. Arm A samples
+Two continuations of Experiment 1.9 step 328, each using three Hunter MI300A nodes
+and 12 GPU workers. Both hide stock identity throughout training. Arm A samples
 feasible markets uniformly; arm B weights feasible markets by included-stock
 training-period stock-days.
 

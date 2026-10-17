@@ -1,13 +1,14 @@
 from collections import deque
 import hashlib
 import math
+import os
 
 import numpy as np
 
 
-JOB = "287925.hunter-pbs01"
-NODES = 12
-WORLD = 24
+JOB = os.environ.get("EXPERIMENT192_JOB", "unsubmitted")
+NODES = 6
+WORLD = 12
 GLOBAL_BATCH = 1536
 MICROBATCH = 2
 UPDATE_BUDGET = 1000
