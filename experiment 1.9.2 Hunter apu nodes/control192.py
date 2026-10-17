@@ -6,13 +6,14 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import socket
 import subprocess
 import threading
 import time
 from zoneinfo import ZoneInfo
 
-from policy192 import JOB, NODES
+from policy192 import JOB, NODES, WALLTIME, WALLTIME_SECONDS
 from storage192 import require_headroom
 
 
@@ -25,8 +26,8 @@ def write_json(path, value):
 
 def allocation(job):
     resources = job["Resource_List"]
-    if int(resources["nodect"]) != NODES or resources["walltime"] != "24:00:00":
-        raise ValueError(f"Expected a {NODES}-node 24-hour allocation")
+    if int(resources["nodect"]) != NODES or resources["walltime"] != WALLTIME:
+        raise ValueError(f"Expected a {NODES}-node {WALLTIME} allocation")
     if int(resources.get("ncpus", 0)) != NODES * 96 or resources.get("place") != "scatter:excl":
         raise ValueError("Expected exclusive nodes with 96 CPU cores each")
     if job["job_state"] != "R" or not job.get("stime") or not job.get("exec_host"):
@@ -35,7 +36,8 @@ def allocation(job):
     if len(hosts) != NODES or any(not re.fullmatch(r"x\d+c\d+s\d+b\d+n\d+", host) for host in hosts):
         raise ValueError("Invalid allocated Hunter host list")
     started = datetime.strptime(job["stime"], "%a %b %d %H:%M:%S %Y").replace(tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
-    return {"hosts": hosts, "start_epoch": started, "end_epoch": started + 86400, "stop_epoch": started + 86280}
+    return {"hosts": hosts, "start_epoch": started, "end_epoch": started + WALLTIME_SECONDS,
+            "stop_epoch": started + WALLTIME_SECONDS - 120}
 
 
 def validate_source(workspace, source):
@@ -46,31 +48,75 @@ def validate_source(workspace, source):
         raise ValueError("Private cohort preparation has not completed")
 
 
-def scheduler_job():
-    if not re.fullmatch(r"\d+\.hunter-pbs01", JOB):
+def scheduler_job(job_id=None):
+    job_id = job_id or JOB
+    if not re.fullmatch(r"\d+\.hunter-pbs01", job_id):
         raise ValueError("EXPERIMENT192_JOB must identify the submitted Hunter job")
-    response = subprocess.run(["/opt/pbs/bin/qstat", "-xf", "-F", "json", JOB],
+    response = subprocess.run(["/opt/pbs/bin/qstat", "-xf", "-F", "json", job_id],
                               check=True, capture_output=True, text=True, timeout=30)
-    return json.loads(response.stdout)["Jobs"][JOB]
+    return json.loads(response.stdout)["Jobs"][job_id]
+
+
+def prepare_continuation(workspace, source, root):
+    import fcntl
+    from evaluate192 import selection_complete
+    base = workspace / "experiment192"
+    journal = base / "continuation-finish-b"
+    journal.mkdir(exist_ok=True)
+    with (journal / "lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        previous = base / "artifacts/job-287999.hunter-pbs01"
+        if (journal / "latest.json").exists():
+            record = json.loads((journal / "latest.json").read_text())
+            if scheduler_job(record["job"])["job_state"] != "F":
+                raise ValueError("Previous continuation job is still active")
+            previous = Path(record["root"]).resolve()
+            previous.relative_to((base / "artifacts").resolve())
+        resume = previous / "arm-B"
+        if not (resume / "latest.json").exists():
+            resume = Path(json.loads((previous / "control/continuation.json").read_text())["resume_arm_root"])
+        resume.resolve().relative_to((base / "artifacts").resolve())
+        if not (resume / "latest.json").exists():
+            raise ValueError("No complete Arm B resume pointer")
+        original_a = base / "artifacts/job-287999.hunter-pbs01/arm-A"
+        if not selection_complete(json.loads((original_a / "TRAINING_DONE.json").read_text())):
+            raise ValueError("Original Arm A selection is not frozen")
+        (root / "arm-A").symlink_to(original_a, target_is_directory=True)
+        done = resume / "TRAINING_DONE.json"
+        completed = done.is_file() and selection_complete(json.loads(done.read_text()))
+        if (previous / "final-test/OPENED.json").exists() and not completed:
+            raise ValueError("Opened final test cannot resume unfrozen training")
+        if completed:
+            def copy_payload(incoming, outgoing):
+                if "checkpoints" in Path(incoming).parts or "exports" in Path(incoming).parts:
+                    return os.link(incoming, outgoing)
+                return shutil.copy2(incoming, outgoing)
+            shutil.copytree(resume, root / "arm-B", copy_function=copy_payload,
+                            ignore=shutil.ignore_patterns("control", "logs", "ledgers"))
+        if (previous / "final-test").exists():
+            shutil.copytree(previous / "final-test", root / "final-test")
+        write_json(root / "control/continuation.json", {"resume_arm_root": str(resume),
+                   "arm_a_root": str(original_a), "training_already_complete": bool(completed),
+                   "previous_root": str(previous), "job": JOB, "source": str(source)})
+        write_json(journal / "latest.json", {"job": JOB, "root": str(root), "source": str(source)})
 
 
 def batch_start(workspace, source):
-    interactive = os.environ.get("PBS_ENVIRONMENT") == "PBS_INTERACTIVE" and os.environ.get("TRAIN192_ATTACHED") == JOB
-    if os.environ.get("PBS_JOBID") != JOB or not (os.environ.get("PBS_ENVIRONMENT") == "PBS_BATCH" or interactive):
+    if os.environ.get("PBS_JOBID") != JOB or os.environ.get("PBS_ENVIRONMENT") != "PBS_BATCH":
         raise ValueError("Startup must run inside the native PBS batch job")
     validate_source(workspace, source)
     timing = allocation(scheduler_job())
     if timing is None or time.time() + 900 >= timing["stop_epoch"]:
         raise ValueError("Batch allocation is not ready or lacks startup reserve")
-    if interactive:
-        validate_compute(timing)
+    validate_compute(timing)
     storage = require_headroom(workspace)
     control = workspace / "experiment192/artifacts" / f"job-{JOB}" / "control"
     control.mkdir(parents=True, exist_ok=True)
     (control / "start.lock").mkdir()
+    prepare_continuation(workspace, source, control.parent)
     write_json(control / "storage-admission.json", storage)
     write_json(control / "deadlines.json", {"job": JOB, **timing})
-    write_json(control / "launch.json", {"event": "attached_interactive_started" if interactive else "native_batch_started", "job": JOB,
+    write_json(control / "launch.json", {"event": "native_batch_started", "job": JOB,
                                         "source": str(source), "time": time.time(), **timing})
     return timing["end_epoch"]
 
@@ -236,11 +282,15 @@ if __name__ == "__main__":
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--batch-start", action="store_true")
     action.add_argument("--batch-exit", type=int)
+    action.add_argument("--resume-root", action="store_true")
     action.add_argument("--dispatch", action="store_true")
     action.add_argument("--autolaunch", action="store_true")
     arguments = parser.parse_args()
     if arguments.batch_start:
         print(batch_start(arguments.workspace, arguments.source))
+    elif arguments.resume_root:
+        record = arguments.workspace / "experiment192/artifacts" / f"job-{JOB}" / "control/continuation.json"
+        print(json.loads(record.read_text())["resume_arm_root"])
     elif arguments.batch_exit is not None:
         batch_exit(arguments.workspace, arguments.batch_exit)
     elif arguments.dispatch:

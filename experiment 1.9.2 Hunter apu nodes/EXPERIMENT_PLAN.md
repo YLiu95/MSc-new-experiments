@@ -1,6 +1,6 @@
 # Experiment 1.9.2: Identity-Free Training With Holdouts
 
-**Parent:** Experiment 1.9 step 328 full recovery checkpoint (private HF `YL95/experiment-1.9-hunter-recovery`,
+**Parent:** Experiment 1.9 step 328 full recovery checkpoint (HF `YL95/experiment-1.9-hunter-recovery`,
 revision `7a17855a414de2241469c1e3fd78f5bf351a69dc`, manifest
 `133e851f4e4de23886b173f4c2874c8a9645e2531a185edde618256f607f2b01`).
 **Basis:** [Experiment 1.9.1 diagnostic report](../experiment%201.9.1/DIAGNOSTIC_REPORT.md).
@@ -116,9 +116,10 @@ Per update, log what 1.9.1 logged (loss, gradient norm, score variance, LR, thro
 label stock-day exposure per market.
 
 Follow the experiment log-backup standard: public HF log repository, immediate upload and then every
-300 s, no overlapping uploads, verified commits and a final flush. Optimizer, RNG, sampler, panels and
-cohort definitions stay private.
-After every stopped run, upload complete best/latest recovery payloads to the private recovery
+300 s, no overlapping uploads, verified commits and a final flush. Optimizer, RNG and sampler
+stay outside log backups; panels and cohort definitions remain unpublished.
+The owner explicitly authorized all model/checkpoint backups to be public on 2026-10-17.
+After every stopped run, upload complete best/latest recovery payloads to the public recovery
 repository and verify the pinned commit before cleanup. Retain the best 1B parent and current
 best/latest per arm locally. Immutable snapshots use hardlinks, not full disk copies. Failed
 uploads never authorize deletion; superseded runs require their own verified backup receipt.
@@ -136,6 +137,18 @@ Startup and runtime quota checks reserve space for both arms' concurrent atomic 
   final selection or open the final test. Only budget completion or early stopping qualifies.
 
 ## 7. Decision Rules
+
+### Test-Split Amendment, 2026-10-17
+
+Before any final-test access, the continuation plan reserves the post-2024 data for
+the final model of the 1.9.x series. Experiment 1.9.2 now opens only **test-report**:
+cutoffs after the 2022-12-31 boundary plus the existing 90-session embargo, with
+the complete label horizon ending no later than 2024-12-31. The final holdout after
+2024-12-31 plus 90 sessions through 2026-08-25 remains sealed. Neither split is used
+for checkpoint selection. Parent 328, frozen A and selected B use identical report
+baskets, IDs hidden as primary and IDs on as secondary. The manifest and checkpoint
+hashes are fixed at opening; interrupted evaluation reuses completed condition rows.
+Experiment 1.9.3 requires review of these results and is not launched by this continuation.
 
 Baseline: step 328 IDs-hidden validation **0.0818**. Its IDs-on 0.0853 is inflated by selection.
 

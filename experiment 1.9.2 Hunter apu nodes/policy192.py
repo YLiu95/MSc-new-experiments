@@ -7,8 +7,10 @@ import numpy as np
 
 
 JOB = os.environ.get("EXPERIMENT192_JOB", "unsubmitted")
-NODES = 6
+NODES = 3
 WORLD = 12
+WALLTIME = "03:00:00"
+WALLTIME_SECONDS = 10800
 GLOBAL_BATCH = 1536
 MICROBATCH = 2
 UPDATE_BUDGET = 1000

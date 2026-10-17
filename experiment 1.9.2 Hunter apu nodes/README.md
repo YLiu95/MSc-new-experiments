@@ -8,18 +8,96 @@ submitted job; batch workers receive this identity from `PBS_JOBID`.
 
 ## Current Status and Checkpoint Cleanup
 
+### Three-Node Native Batch Continuation, 2026-10-17
+
+The interactive client session for job `287999.hunter-pbs01` dropped and PBS ended
+the allocation at 14:45:27 CEST. Arm A had early-stopped at update 650 with frozen
+best step 928. Arm B reached update 862 but its last complete recovery is update
+850 (step 1178); its selected best is update 750 (step 1078). The test was not opened.
+
+The continuation in `CONTINUATION_PLAN.md` uses **three nodes, 12 GPU workers and
+a three-hour native batch job**, never `qsub -I`. Arm B alone resumes the original
+budget with full model/Adam, sampler, selection and rank RNG state. Arm A remains
+frozen in its original root. Source changes and prerequisite backups must pass
+verification before submission; no allocation is needed for that preparation.
+
+`run.sh` trains B and then evaluates parent/A/B, IDs hidden and IDs on, on the same
+12 workers. Resubmission finds the previous attempt through
+`experiment192/continuation-finish-b/latest.json`, refuses an active predecessor,
+and carries complete B state and any fixed final-test records into the new job root.
+Completed evaluation conditions are reused, never selected or sampled again.
+
+The pre-access amendment opens only the 2023-2024 **test-report** split, with the
+90-session embargo and the entire label horizon ending by 2024-12-31. Post-2024
+final-holdout data remain sealed. Experiment 1.9.3 is not started automatically.
+
+### Reviewed Six-Node Restart, 2026-10-17
+
+Job `287999.hunter-pbs01` received six exclusive nodes, 96 CPU cores per node,
+at 12:42:09 CEST. The automatic launcher started training at 12:42:31 CEST,
+independently of this chat. The allocation ends on 2026-10-18 at 12:42:09 CEST.
+Keep its original `qsub -I` terminal open. No competing job was submitted.
+
+The immutable runtime is `experiment192/source-review-six-20261017-v2`, archive
+SHA256 `3caa1b80d131501242f39f7a36944940742c8982f0fd8a76aa12a785ade81abc`.
+All **54 Hunter tests** and Bash syntax checks pass; Windows passes 48 tests with
+six POSIX cases skipped. GitHub source commit:
+`d073ce624f46c0661a25f999173b5ff612ef8608`.
+Both arms resumed their complete update-250 states and passed the hardware gates.
+The training notification fired after five fresh updates per arm at 12:47:08 CEST.
+At the 14:14 CEST check, Arm A had early-stopped normally at update 650, retaining
+best update 600 and latest update 650. Arm B was still training, with a complete
+best/latest recovery at update 700. No failure was reported. Actual CPU audit outputs
+have not been checked here; final evaluation still requires both arms to finish.
+
+The current-job log relay is active at 300 seconds and continued during the large
+recovery transfer. Initial verified commit:
+`f25d2d7e312aa65ef92d57ad5bf806ce3f4f5e50`; a later scheduled commit is
+`b164d7d3a985ad39298a92c44765a650ae12fe93`. During the public recovery upload,
+logs continued backing up; commit `c67d0b6691fc2f34a05b284738ec5ef3e64e2d7f`
+was verified at 14:10:07 CEST. Local and hosted TensorBoard share both arm runs
+and the aligned reference, with fresh restart events added to the existing history.
+
+**Public backup authorization, 2026-10-17:** the owner requested all Hugging Face
+backups be public after the earlier private-storage-limit failure. All four remaining
+private model/checkpoint backup repositories were changed to public and verified
+anonymously, including `YL95/experiment-1.9.2-hunter-recovery`. Dataset repositories
+were not changed. The older parent recovery repository is already public.
+
+Full recovery publication includes optimizer, RNG and sampler state, in a separate
+repository from five-minute logs. Credentials, panels, raw examples and sealed cohorts
+remain excluded. The failed-run recoveries were uploaded successfully at public
+commit `544234c423b2995c498460db13f7d5baa3c78245`, verified at 14:12:16 CEST.
+All 136 files (41.84 GiB of unique payloads) passed anonymous remote size/digest
+checks against the pinned receipt. Hunter acknowledged the same commit, retained
+the parent and selected best/latest recoveries, and released the transfer snapshot.
+No additional Hunter checkpoint deletion was needed. Receipt-gated cleanup removed
+eight large cached file paths in `publication/recovery-287990`, leaving 64.4 GiB
+free on Windows. Hunter quota headroom was about 370 GiB at the follow-up check.
+The legacy `private` CLI mode, URL route and receipt filename identify the full-recovery
+channel for compatibility, not repository visibility. Receipts must have `private: false`.
+
+The public publisher runs separately from the immutable training source, from
+`experiment192/publication-public-20261017-v1`. Its release passed 55 Hunter tests
+and 49 Windows tests, with six POSIX cases skipped on Windows. The current-job public
+recovery daemon remains armed independently of five-minute logs for post-run backup.
+
+### Completed Cleanup
+
 Job `287990.hunter-pbs01` failed at update 300 because the Lustre group quota
 could not accommodate an atomic recovery save. Both latest complete recoveries
 are step 578, or 250 new updates; update 300 is not a resumable checkpoint.
-Training has not restarted. The separate six-node, 24-hour interactive request
-`287999.hunter-pbs01` was still queued at the final cleanup check on 2026-10-17.
+At this earlier cleanup check, training had not yet restarted and the six-node
+interactive request `287999.hunter-pbs01` was still queued. Its subsequent successful
+restart and public recovery backup are recorded above.
 
 User-authorized cleanup removed 25 obsolete checkpoint, export and warm-start
 directories, reclaiming an additional **272.7 GiB** after the earlier 133 GiB
-duplicate removal. Group quota usage is **67,464,280 / 500,000,000 KiB**, leaving
+duplicate removal. Group quota usage then was **67,464,280 / 500,000,000 KiB**, leaving
 **412.5 GiB free**. These are quota measurements, not filesystem-wide capacity.
 
-The only remaining full checkpoint directories, relative to `HUNTER_WORKSPACE`, are:
+At that cleanup check, the four retained full checkpoint directories, relative to
+`HUNTER_WORKSPACE`, were:
 
 ```text
 experiment19/artifacts/job-286615.hunter-pbs01/checkpoints/step_00000328_000000104960
@@ -150,10 +228,10 @@ Startup requires six checkpoint payloads plus 8 GiB of headroom (about 103.6 GiB
 Runtime checks every ten updates reserve four payloads plus 8 GiB; each save checks
 space for two concurrent payloads plus 8 GiB. Existing atomic-save checks remain.
 Cloud recovery snapshots hardlink immutable checkpoint files; mutable logs are copied.
-Log backups remain independent at 300 seconds. Private backups use job-scoped paths,
+Log backups remain independent at 300 seconds. Public recovery backups use job-scoped paths,
 include complete stopped-run recoveries even after failure, and verify cloud hashes
 and privacy before acknowledging cleanup on Hunter. Best/latest are always retained.
-Superseded source checkpoints are eligible only after their own private receipt,
+Superseded source checkpoints are eligible only after their own verified recovery receipt,
 verified replacement receipt, finished allocation work and completed exposure audit.
 The parent checkpoint, datasets, logs, code and metadata are never cleanup targets.
 If backup fails, local recovery remains protected. This reduces quota-related risk;

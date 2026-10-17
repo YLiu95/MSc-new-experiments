@@ -35,8 +35,10 @@ INTERVAL = 300
 
 
 def stopped(root):
+    scheduler = root / "control/status.json"
+    pbs_finished = scheduler.is_file() and json.loads(scheduler.read_text()).get("state") == "F"
     return ((root / "control/allocation-ended.json").is_file() or (root / "control/batch-exit.json").is_file() or
-            all((root / f"arm-{arm}/TRAINING_DONE.json").is_file() for arm in ("A", "B")))
+            pbs_finished or all((root / f"arm-{arm}/TRAINING_DONE.json").is_file() for arm in ("A", "B")))
 
 
 def status(base, job=JOB):
@@ -46,7 +48,8 @@ def status(base, job=JOB):
     result.update(job=job, experiment="1.9.2", finished=(root / "EXPERIMENT_DONE.json").is_file(), training_stopped=stopped(root))
     result["failure"] = json.loads((root / "control/failure.json").read_text()) if (root / "control/failure.json").exists() else None
     result["allocation_ended"] = (root / "control/allocation-ended.json").exists()
-    result["finished"] = result["finished"] or result["allocation_ended"] or (root / "control/batch-exit.json").is_file()
+    result["finished"] = (result["finished"] or result["allocation_ended"] or result.get("state") == "F"
+                          or (root / "control/batch-exit.json").is_file())
     return result
 
 
@@ -146,7 +149,7 @@ def freeze_snapshot(base, original, mode):
 def acknowledge_backup(base, snapshot, receipt, mode):
     job = snapshot["job"]
     if (receipt.get("job") != job or receipt.get("mode") != mode or not receipt.get("verified")
-            or receipt.get("private") != (mode == "private")
+            or receipt.get("private") is not False
             or receipt.get("repository") != (PRIVATE_HF if mode == "private" else HF)
             or not re.fullmatch(r"[0-9a-f]{40}", receipt.get("commit", ""))):
         raise ValueError("Backup receipt identity or privacy mismatch")
@@ -167,8 +170,10 @@ def acknowledge_backup(base, snapshot, receipt, mode):
 
 
 def cleanup_after_backup(base, root, receipt):
-    if not stopped(root) or not receipt.get("verified") or not receipt.get("private") or receipt.get("job") != root.name:
-        raise ValueError("Cleanup requires a stopped job and verified private backup")
+    if (not stopped(root) or not receipt.get("verified") or receipt.get("private") is not False
+            or receipt.get("mode") != "private" or receipt.get("repository") != PRIVATE_HF
+            or receipt.get("job") != root.name):
+        raise ValueError("Cleanup requires a stopped job and verified public recovery backup")
     keep = set()
     for arm in ("A", "B"):
         for label in ("best", "latest"):
@@ -200,7 +205,9 @@ def cleanup_after_backup(base, root, receipt):
             prior_receipt = previous.parent / "control/private-backup.json"
             if previous.parent != root and stopped(previous.parent) and prior_receipt.is_file():
                 archived = json.loads(prior_receipt.read_text())
-                if archived.get("verified") and archived.get("private") and archived.get("job") == previous.parent.name:
+                if (archived.get("verified") and archived.get("private") is False
+                    and archived.get("mode") == "private" and archived.get("repository") == PRIVATE_HF
+                    and archived.get("job") == previous.parent.name):
                     covered = {item["directory"]: item["manifest_sha256"] for item in archived["checkpoints"].values()}
                     for directory in (previous / "checkpoints").glob("step_*"):
                         if (directory.is_dir() and not directory.is_symlink() and directory.resolve() not in keep
@@ -210,7 +217,7 @@ def cleanup_after_backup(base, root, receipt):
                             if export.is_dir() and not export.is_symlink():
                                 shutil.rmtree(export)
                             removed.append(str(directory.relative_to(base)))
-    write_json(root / "control/cleanup.json", {"verified_private_commit": receipt["commit"], "removed": removed,
+    write_json(root / "control/cleanup.json", {"verified_recovery_commit": receipt["commit"], "private": False, "removed": removed,
                "retained": [str(directory.relative_to(base)) for directory in sorted(keep)], "time": time.time()})
 
 
@@ -363,8 +370,8 @@ def publish_once(root, endpoint, mode):
     if mode != "private":
         paths["README.md"] = SOURCE / "MODEL_CARD.md"
     api = HfApi(token=shared.legacy.credential("HF_TOKEN"))
-    private = mode == "private"
-    repository = PRIVATE_HF if private else HF
+    private = False
+    repository = PRIVATE_HF if mode == "private" else HF
     if api.whoami()["name"] != "YL95":
         raise ValueError("Unexpected Hugging Face account")
     api.create_repo(repository, repo_type="model", private=private, exist_ok=True)

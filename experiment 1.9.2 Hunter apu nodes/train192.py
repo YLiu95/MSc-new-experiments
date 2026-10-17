@@ -46,6 +46,18 @@ def request_stop(signum, frame):
     STOP = True
 
 
+def scientific_stop(new_updates, validated_update, early_stop):
+    if new_updates >= UPDATE_BUDGET and validated_update >= UPDATE_BUDGET:
+        return "update_budget"
+    return "early_stop" if early_stop else None
+
+
+def completion_report(state, reason, end_at, now):
+    return {**state, "reason": reason, "finished_at": now, "checkpoint_complete": True,
+            "finished_before_reserve": now <= end_at - 120, "training_stop_epoch": end_at - 120,
+            "allocation_end_epoch": end_at, "selection_frozen": reason in ("early_stop", "update_budget")}
+
+
 def update(model, wrapped, optimizer, batches, update_index):
     context = model.context
     count = torch.tensor(sum(informative_count(batch) for batch in batches), device=context.device)
@@ -124,6 +136,19 @@ def prepare_resume(arm_root, root, arm, config):
         shutil.copytree(directory, root / "checkpoints" / directory.name, copy_function=os.link)
     for label, pointer in pointers.items():
         write_json(root / f"{label}.json", pointer)
+    exported = set()
+    for label in ("best", "latest"):
+        pointer_path = arm_root / "exports" / f"{label}.json"
+        if not pointer_path.exists():
+            continue
+        pointer = json.loads(pointer_path.read_text())
+        directory = (pointer_path.parent / pointer["directory"]).resolve()
+        directory.relative_to((arm_root / "exports").resolve())
+        if directory not in exported:
+            verify(directory, workers=4)
+            shutil.copytree(directory, root / "exports" / directory.name, copy_function=os.link)
+            exported.add(directory)
+        write_json(root / "exports" / f"{label}.json", pointer)
     for name in ("history.jsonl", "validation.jsonl"):
         source = arm_root / name
         if source.exists():
@@ -321,8 +346,9 @@ def main(arguments):
                     return "finish", "signal"
                 if time.time() + save_seconds + update_seconds >= stop_at:
                     return "finish", "allocation_reserve"
-                if early_stop:
-                    return "finish", "early_stop"
+                scientific = scientific_stop(state["new_updates"], validated_update, early_stop)
+                if scientific:
+                    return "finish", scientific
                 if state["new_updates"] % 10 == 0:
                     storage = storage_status(root)
                     write_json(root / "reports/storage.json", storage)
@@ -373,10 +399,7 @@ def main(arguments):
                 if action == "finish":
                     def finish():
                         writer.flush()
-                        report = {**state, "reason": stop_reason, "finished_at": time.time(), "checkpoint_complete": True,
-                                  "finished_before_reserve": time.time() <= stop_at, "training_stop_epoch": stop_at,
-                                  "allocation_end_epoch": arguments.end_at,
-                                  "selection_frozen": stop_reason in ("early_stop", "update_budget")}
+                        report = completion_report(state, stop_reason, arguments.end_at, time.time())
                         write_json(root / "TRAINING_DONE.json", report)
                         print(json.dumps({"event": "training_done", **report}), flush=True)
                     rank_zero(context, finish)

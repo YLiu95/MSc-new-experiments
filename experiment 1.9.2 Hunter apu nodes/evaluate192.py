@@ -13,6 +13,7 @@ from ranking17.recovery import digest, verify
 
 def evaluate_cohort(model, panels, items, tasks, identity_masked=True):
     context = model.context
+    was_training = model.training
     rows = []
     for index, item in enumerate(items):
         if index % context.dp_size != context.dp_rank:
@@ -45,14 +46,14 @@ def evaluate_cohort(model, panels, items, tasks, identity_masked=True):
     dist.broadcast_object_list(status, src=0)
     if "error" in status[0]:
         raise RuntimeError(status[0]["error"])
-    model.train()
+    model.train(was_training)
     return status[0], combined
 
 
-def final_ready(root):
-    return all((root / f"arm-{arm}/TRAINING_DONE.json").is_file() and
-               selection_complete(json.loads((root / f"arm-{arm}/TRAINING_DONE.json").read_text()))
-               for arm in ("A", "B"))
+def final_ready(root, arm_a_root=None):
+    roots = (arm_a_root or root / "arm-A", root / "arm-B")
+    return all((directory / "TRAINING_DONE.json").is_file() and
+               selection_complete(json.loads((directory / "TRAINING_DONE.json").read_text())) for directory in roots)
 
 
 def selection_complete(done):
@@ -60,14 +61,14 @@ def selection_complete(done):
             done.get("reason") in ("early_stop", "update_budget"))
 
 
-def require_final_selection(root, final_evaluation, protocol):
+def require_final_selection(root, final_evaluation, protocol, arm_a_root=None, resume=False):
     if not final_evaluation:
         raise ValueError("Final test is sealed; explicit --final-evaluation is required")
     if not protocol.get("final_test_unseen_user_confirmed"):
         raise ValueError("Prior test exposure must be resolved before final evaluation")
     selection = {}
     for arm in ("A", "B"):
-        arm_root = root / f"arm-{arm}"
+        arm_root = arm_a_root if arm == "A" and arm_a_root is not None else root / f"arm-{arm}"
         done = json.loads((arm_root / "TRAINING_DONE.json").read_text())
         if not selection_complete(done):
             raise ValueError("Both arms must finish and freeze selection first")
@@ -78,7 +79,12 @@ def require_final_selection(root, final_evaluation, protocol):
         selection[arm] = {"directory": str(directory), "manifest_sha256": digest(directory / "manifest.json"),
                           "step": pointer["step"]}
     if (root / "final-test" / "OPENED.json").exists():
-        raise ValueError("Final test was already opened; reuse saved rows, do not rerun")
+        if not resume:
+            raise ValueError("Final test was already opened; reuse saved rows, do not rerun")
+        frozen = json.loads((root / "final-test/OPENED.json").read_text())["selection"]
+        if any(frozen[arm][key] != selection[arm][key] for arm in ("A", "B") for key in ("step", "manifest_sha256")):
+            raise ValueError("Opened final-test checkpoint selection changed")
+        return frozen
     return selection
 
 

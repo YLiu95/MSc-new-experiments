@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -83,6 +86,9 @@ def test_resume_preserves_state_and_rejects_contract_changes(tmp_path, monkeypat
     write_json(checkpoint / "manifest.json", {})
     for label in ("best", "latest"):
         write_json(source / f"{label}.json", {"directory": "checkpoints/step_530", "step": 530})
+        write_json(source / "exports" / f"{label}.json", {"directory": "step_530", "step": 530})
+    write_json(source / "exports/step_530/manifest.json", {})
+    (source / "exports/step_530/weights-00.safetensors").write_bytes(b"selected export")
     (source / "history.jsonl").write_text('{"new_updates":202}\n{"new_updates":203}\n')
     monkeypatch.setattr(train192, "verify", lambda *args, **kwargs: None)
     with pytest.raises(ValueError, match="frozen training contract"):
@@ -94,6 +100,8 @@ def test_resume_preserves_state_and_rejects_contract_changes(tmp_path, monkeypat
     assert (destination / "history.jsonl").read_text() == '{"new_updates":202}\n'
     assert result["provenance"]["optimizer_preserved"] and result["provenance"]["sampler_preserved"]
     assert (destination / "checkpoints/step_530/state.json").read_bytes() == (checkpoint / "state.json").read_bytes()
+    assert (destination / "exports/step_530/weights-00.safetensors").samefile(source / "exports/step_530/weights-00.safetensors")
+    assert json.loads((destination / "exports/best.json").read_text())["step"] == 530
     with pytest.raises(ValueError, match="already contains"):
         train192.prepare_resume(source, destination, "A", current)
 
@@ -270,6 +278,77 @@ def test_time_block_pairing_and_known_difference():
     assert result["time_block_bootstrap_95pct"] == pytest.approx([0.01, 0.01])
 
 
+def test_test_report_manifest_excludes_final_holdout_and_is_reused(tmp_path, monkeypatch):
+    import final192
+    from ranker.contract import Task, split_masks
+    from ranker.evaluate import build_manifest
+    from ranker.data import write_json
+    class Panel:
+        market = "AU"
+        dates = np.arange(np.datetime64("2018-01-01"), np.datetime64("2026-08-26"))
+        def cutoffs(self, task, split):
+            return np.flatnonzero(split_masks(self.dates, task.horizon)[split])
+        def eligible(self, cutoff, length):
+            return np.arange(5)
+    panels = [Panel()]
+    wrapper = final192.TestReportPanel(panels[0])
+    for horizon in (1, 90):
+        cutoffs = wrapper.cutoffs(Task(128, horizon, 3), "test")
+        assert len(cutoffs) and all(panels[0].dates[cutoff + horizon] <= np.datetime64("2024-12-31") for cutoff in cutoffs)
+    parent = tmp_path / "parent"
+    write_json(parent / "manifest.json", {})
+    selection = {arm: {"step": 100, "manifest_sha256": arm, "directory": str(tmp_path / arm)} for arm in ("A", "B")}
+    monkeypatch.setattr(final192, "build_manifest", lambda directory, panels, split, seed:
+                        build_manifest(directory, panels, split, seed, cells=((64, 1, 3), (128, 90, 3)), max_cutoffs=4, baskets=1))
+    record, items = final192.open_or_resume_test(tmp_path / "final", selection, parent, panels)
+    assert items and record["split"]["final_holdout_sealed"]
+    monkeypatch.setattr(final192, "build_manifest", lambda *args: pytest.fail("Opened manifest must not be rebuilt"))
+    assert final192.open_or_resume_test(tmp_path / "final", selection, parent, panels) == (record, items)
+    bad = {**items[0], "cutoff": int(np.searchsorted(panels[0].dates, np.datetime64("2025-01-01")))}
+    with pytest.raises(ValueError, match="sealed final holdout"):
+        final192.validate_test_report([bad], panels)
+
+
+def test_final_test_resume_evaluates_only_missing_conditions(tmp_path):
+    from final192 import saved_condition
+    from ranker.contract import MARKETS
+    items = [{"market": 0, "cutoff": 100, "task": [64, 1, 3]}]
+    rows = [{"index": 0, "market": MARKETS[0], "cutoff": 100, "task": [64, 1, 3], "spearman": 0.1}]
+    calls = []
+    def evaluate(label):
+        calls.append(label)
+        return {"macro_spearman": 0.1}, rows
+    synchronize = lambda operation: operation()
+    saved_condition(tmp_path, "parent", "hidden", "p", {"sha256": "m"}, items, lambda: evaluate("parent"), synchronize)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        saved_condition(tmp_path, "B", "hidden", "b", {"sha256": "m"}, items,
+                        lambda: (_ for _ in ()).throw(RuntimeError("interrupted")), synchronize)
+    for label, checksum in (("parent", "p"), ("B", "b")):
+        saved_condition(tmp_path, label, "hidden", checksum, {"sha256": "m"}, items, lambda label=label: evaluate(label), synchronize)
+    assert calls == ["parent", "B"]
+    with pytest.raises(ValueError, match="provenance"):
+        saved_condition(tmp_path, "B", "hidden", "changed", {"sha256": "m"}, items, lambda: evaluate("bad"), synchronize)
+
+
+def test_final_selection_uses_frozen_a_from_original_root_and_rejects_reselection(tmp_path, monkeypatch):
+    import evaluate192
+    from ranker.data import write_json
+    root, original_a = tmp_path / "new", tmp_path / "original/arm-A"
+    monkeypatch.setattr(evaluate192, "verify", lambda *args, **kwargs: None)
+    for owner in (original_a, root / "arm-B"):
+        write_json(owner / "TRAINING_DONE.json", {"checkpoint_complete": True, "selection_frozen": True, "reason": "update_budget"})
+        write_json(owner / "best.json", {"directory": "checkpoints/best", "step": 100})
+        write_json(owner / "checkpoints/best/manifest.json", {})
+    protocol = {"final_test_unseen_user_confirmed": True}
+    selection = evaluate192.require_final_selection(root, True, protocol, original_a)
+    assert selection["A"]["directory"] == str((original_a / "checkpoints/best").resolve())
+    write_json(root / "final-test/OPENED.json", {"selection": selection})
+    assert evaluate192.require_final_selection(root, True, protocol, original_a, resume=True) == selection
+    write_json(root / "arm-B/best.json", {"directory": "checkpoints/best", "step": 101})
+    with pytest.raises(ValueError, match="selection changed"):
+        evaluate192.require_final_selection(root, True, protocol, original_a, resume=True)
+
+
 def test_training_import_and_twelve_worker_distribution():
     from ranker.sampler import Assignment
     from train192 import distribute_assignments
@@ -280,6 +359,113 @@ def test_training_import_and_twelve_worker_distribution():
     assert sorted(entry.cutoff for rank in groups for batch in rank for entry in batch) == list(range(GLOBAL_BATCH))
 
 
+def test_final_driver_runs_six_conditions_on_twelve_workers_then_reuses_rows(tmp_path, monkeypatch):
+    import final192
+    import evaluate192
+    from types import SimpleNamespace
+    from ranker.contract import split_masks, MARKETS
+    from ranker.evaluate import build_manifest
+    from ranker.data import write_json
+    root, parent = tmp_path / "run", tmp_path / "parent"
+    for directory in (parent, root / "arm-A/checkpoints/best", root / "arm-B/checkpoints/best"):
+        write_json(directory / "manifest.json", {})
+    for arm in ("A", "B"):
+        write_json(root / f"arm-{arm}/TRAINING_DONE.json", {"checkpoint_complete": True, "selection_frozen": True, "reason": "update_budget"})
+        write_json(root / f"arm-{arm}/best.json", {"directory": "checkpoints/best", "step": 100})
+    class Panel:
+        dates = np.arange(np.datetime64("2018-01-01"), np.datetime64("2026-08-26"))
+        def __init__(self, path, market):
+            self.market = market
+        def cutoffs(self, task, split):
+            return np.flatnonzero(split_masks(self.dates, task.horizon)[split])
+        def eligible(self, cutoff, length):
+            return np.arange(5)
+    class Model:
+        def __init__(self, *args):
+            pass
+        def requires_grad_(self, value):
+            return self
+        def eval(self):
+            return self
+        def load_state_dict(self, state):
+            pass
+    context = SimpleNamespace(rank=0, dp_size=24)
+    monkeypatch.setenv("PBS_JOBID", final192.JOB)
+    monkeypatch.setenv("LOCAL_RANK", "0")
+    monkeypatch.setattr(final192.os, "sched_setaffinity", lambda *args: None, raising=False)
+    monkeypatch.setattr(final192.ParallelContext, "initialize", lambda *args: context)
+    monkeypatch.setattr(final192, "rank_zero", lambda context, operation: operation())
+    monkeypatch.setattr(final192, "load_protocol", lambda *args: {"final_test_unseen_user_confirmed": True})
+    monkeypatch.setattr(final192, "verify_parent", lambda *args: ({"model": {}}, {}))
+    monkeypatch.setattr(final192, "verify", lambda *args, **kwargs: None)
+    monkeypatch.setattr(evaluate192, "verify", lambda *args, **kwargs: None)
+    monkeypatch.setattr(final192, "MarketPanel", Panel)
+    monkeypatch.setattr(final192, "ModelConfig", lambda **kwargs: None)
+    monkeypatch.setattr(final192, "IdentityHiddenModel", Model)
+    monkeypatch.setattr(final192, "load_file", lambda *args: {})
+    monkeypatch.setattr(final192.dist, "barrier", lambda: None)
+    monkeypatch.setattr(final192.dist, "destroy_process_group", lambda: None)
+    monkeypatch.setattr(final192, "build_manifest", lambda directory, panels, split, seed:
+                        build_manifest(directory, panels, split, seed, cells=((128, 90, 3),), max_cutoffs=2, baskets=1))
+    calls = []
+    def evaluate(model, panels, items, tasks, masked):
+        calls.append(masked)
+        return {"macro_spearman": 0.1}, [{"index": index, "market": MARKETS[item["market"]],
+                "cutoff": item["cutoff"], "task": item["task"], "spearman": 0.1} for index, item in enumerate(items)]
+    monkeypatch.setattr(final192, "evaluate_cohort", evaluate)
+    monkeypatch.setattr(final192, "time_block_difference", lambda *args: {"block_sessions": 90})
+    arguments = SimpleNamespace(root=root, parent=parent, panel=tmp_path, prepared=tmp_path,
+                                end_at=final192.time.time() + 10000, final_evaluation=True, arm_a_root=None)
+    with pytest.raises(ValueError, match="12 allocated"):
+        final192.main(arguments)
+    context.dp_size = 12
+    final192.main(arguments)
+    assert calls == [True, False] * 3
+    final192.main(arguments)
+    assert calls == [True, False] * 3
+    done = json.loads((root / "EXPERIMENT_DONE.json").read_text())
+    assert done["final_test_complete"] and done["final_holdout_sealed"]
+    assert (root / "RESULTS.md").exists()
+
+
+def test_continuation_rejects_overlap_and_carries_completed_b_and_final_rows(tmp_path, monkeypatch):
+    import control192
+    import os
+    import sys
+    import shutil
+    from types import SimpleNamespace
+    from ranker.data import write_json
+    if os.name != "posix":
+        monkeypatch.setitem(sys.modules, "fcntl", SimpleNamespace(LOCK_EX=1, flock=lambda *args: None))
+        monkeypatch.setattr(Path, "symlink_to", lambda self, target, **kwargs: shutil.copytree(target, self))
+    base = tmp_path / "experiment192"
+    original = base / "artifacts/job-287999.hunter-pbs01"
+    done = {"checkpoint_complete": True, "selection_frozen": True, "reason": "early_stop"}
+    write_json(original / "arm-A/TRAINING_DONE.json", done)
+    write_json(original / "arm-B/latest.json", {"directory": "checkpoints/850"})
+    first = base / "artifacts/job-123.hunter-pbs01"
+    first.mkdir(parents=True)
+    monkeypatch.setattr(control192, "JOB", "123.hunter-pbs01")
+    control192.prepare_continuation(tmp_path, tmp_path / "source", first)
+    assert json.loads((first / "control/continuation.json").read_text())["resume_arm_root"] == str(original / "arm-B")
+    write_json(first / "arm-B/latest.json", {"directory": "checkpoints/1000"})
+    write_json(first / "arm-B/TRAINING_DONE.json", {**done, "reason": "update_budget"})
+    write_json(first / "arm-B/checkpoints/1000/state.json", {"new_updates": 1000})
+    write_json(first / "final-test/OPENED.json", {"frozen": True})
+    write_json(first / "final-test/private-rows-parent-hidden.json", {"saved": True})
+    second = base / "artifacts/job-124.hunter-pbs01"
+    second.mkdir(parents=True)
+    monkeypatch.setattr(control192, "JOB", "124.hunter-pbs01")
+    monkeypatch.setattr(control192, "scheduler_job", lambda *args: {"job_state": "R"})
+    with pytest.raises(ValueError, match="still active"):
+        control192.prepare_continuation(tmp_path, tmp_path / "source", second)
+    monkeypatch.setattr(control192, "scheduler_job", lambda *args: {"job_state": "F"})
+    control192.prepare_continuation(tmp_path, tmp_path / "source", second)
+    assert (second / "arm-B/checkpoints/1000/state.json").samefile(first / "arm-B/checkpoints/1000/state.json")
+    assert json.loads((second / "control/continuation.json").read_text())["training_already_complete"]
+    assert (second / "final-test/private-rows-parent-hidden.json").read_bytes() == (first / "final-test/private-rows-parent-hidden.json").read_bytes()
+
+
 @pytest.mark.parametrize("reason", ["quota_reserve", "allocation_reserve", "signal", "validation_would_exceed_reserve", "early_stop", "update_budget"])
 def test_final_selection_requires_scientific_completion(tmp_path, reason):
     from ranker.data import write_json
@@ -288,6 +474,17 @@ def test_final_selection_requires_scientific_completion(tmp_path, reason):
         write_json(tmp_path / f"arm-{arm}/TRAINING_DONE.json",
                    {"checkpoint_complete": True, "selection_frozen": True, "reason": reason})
     assert bool(final_ready(tmp_path)) == (reason in ("early_stop", "update_budget"))
+
+
+def test_validated_budget_stop_freezes_selection():
+    from train192 import scientific_stop, completion_report
+    from evaluate192 import selection_complete
+    assert scientific_stop(1000, 950, False) is None
+    assert scientific_stop(1000, 1000, True) == "update_budget"
+    assert scientific_stop(950, 950, True) == "early_stop"
+    report = completion_report({"new_updates": 1000}, "update_budget", 2000, 1000)
+    assert report["selection_frozen"] and selection_complete(report)
+    assert not completion_report({}, "signal", 2000, 1000)["selection_frozen"]
 
 
 def test_progress_does_not_count_restored_history_as_fresh(tmp_path):
@@ -304,16 +501,16 @@ def test_progress_does_not_count_restored_history_as_fresh(tmp_path):
 
 def test_queued_and_incomplete_running_allocation_waits():
     from control192 import allocation
-    job = {"Resource_List": {"nodect": 6, "walltime": "24:00:00", "ncpus": 576, "place": "scatter:excl"}, "job_state": "Q"}
+    job = {"Resource_List": {"nodect": 3, "walltime": "03:00:00", "ncpus": 288, "place": "scatter:excl"}, "job_state": "Q"}
     assert allocation(job) is None
     job["job_state"] = "R"
     assert allocation(job) is None
     job["stime"] = "Sat Oct 17 01:00:00 2026"
     assert allocation(job) is None
-    job["exec_host"] = "+".join(f"x1000c1s{index}b0n0/0" for index in range(6))
+    job["exec_host"] = "+".join(f"x1000c1s{index}b0n0/0" for index in range(3))
     timing = allocation(job)
-    assert len(timing["hosts"]) == 6
-    assert timing["end_epoch"] - timing["start_epoch"] == 86400
+    assert len(timing["hosts"]) == 3
+    assert timing["end_epoch"] - timing["start_epoch"] == 10800
     assert timing["end_epoch"] - timing["stop_epoch"] == 120
 
 
@@ -321,6 +518,8 @@ def test_native_batch_start_is_job_bound_and_duplicate_guarded(tmp_path, monkeyp
     import control192
     monkeypatch.setattr(control192, "JOB", "123.hunter-pbs01")
     monkeypatch.setattr(control192, "validate_source", lambda *args: None)
+    monkeypatch.setattr(control192, "validate_compute", lambda *args: None)
+    monkeypatch.setattr(control192, "prepare_continuation", lambda *args: None)
     monkeypatch.setattr(control192, "require_headroom", lambda *args: {"free_bytes": 10**12})
     monkeypatch.setattr(control192, "scheduler_job", lambda: {})
     monkeypatch.setattr(control192, "allocation", lambda job: {"end_epoch": 2000000000, "stop_epoch": 1999999880})
@@ -398,9 +597,9 @@ def test_autolaunch_waits_for_complete_metadata_and_dispatches_once(tmp_path, mo
     import control192
     from unittest.mock import Mock
     from ranker.data import write_json
-    resources = {"nodect": 6, "walltime": "24:00:00", "ncpus": 576, "place": "scatter:excl"}
+    resources = {"nodect": 3, "walltime": "03:00:00", "ncpus": 288, "place": "scatter:excl"}
     running = {"Resource_List": resources, "job_state": "R", "stime": "Sat Oct 17 01:00:00 2026",
-               "exec_host": "+".join(f"x1000c1s{index}b0n0/0" for index in range(6))}
+               "exec_host": "+".join(f"x1000c1s{index}b0n0/0" for index in range(3))}
     jobs = [{"Resource_List": resources, "job_state": "Q"}, {"Resource_List": resources, "job_state": "R"}, running, running, {**running, "job_state": "F"}]
     monkeypatch.setattr(control192, "scheduler_job", Mock(side_effect=jobs))
     monkeypatch.setattr(control192, "validate_source", lambda *args: None)
@@ -456,18 +655,19 @@ def test_worker_shells_override_module_transport_after_environment_load():
     source = (Path(__file__).resolve().parents[1] / "run.sh").read_text()
     assert "pbs_attach" not in source
     assert "--no-python" not in source
-    assert "#PBS -l select=6:node_type=mi300a:ncpus=96:mpiprocs=1" in source
+    assert "#PBS -l select=3:node_type=mi300a:ncpus=96:mpiprocs=1" in source
+    assert "#PBS -l walltime=03:00:00" in source
     assert "#PBS -r n" in source and "PBS_BATCH" in source
     assert "--nnodes=3 --nproc_per_node=4" in source
-    assert "--nnodes=6 --nproc_per_node=4" in source
-    shells = source.split("mpiexec -n 6")[1:]
+    assert "--nnodes=6" not in source and "PBS_INTERACTIVE" not in source
+    shells = source.split("mpiexec -n 3")[1:]
     assert len(shells) == 2
     for shell in shells:
         assert shell.index("source ") < shell.index("export NCCL_NET=Socket") < shell.index("torch.distributed.run")
 
 
-@pytest.mark.parametrize("node_rank", range(6))
-def test_actual_worker_shell_assigns_two_disjoint_three_node_arms(tmp_path, node_rank):
+@pytest.mark.parametrize("node_rank", range(3))
+def test_actual_worker_shell_assigns_all_three_nodes_to_b(tmp_path, node_rank):
     import os
     from pathlib import Path
     import subprocess
@@ -485,15 +685,15 @@ def test_actual_worker_shell_assigns_two_disjoint_three_node_arms(tmp_path, node
     environment = {**os.environ, "HUNTER_WORKSPACE": str(tmp_path), "PMI_RANK": str(node_rank),
         "MASTER_A": "node-a", "MASTER_B": "node-b", "EXPERIMENT192_ROOT": str(tmp_path / "run"),
         "TRAIN192_SOURCE": str(tmp_path), "PARENT192": "parent", "PREPARED192": "prepared", "TRAIN_END_AT": "2000000000",
-        "RESUME192_ROOT": str(tmp_path / "previous")}
+        "RESUME_B_ROOT": str(tmp_path / "previous/arm-B")}
     result = subprocess.run(["bash", "-c", shell], env=environment, check=True, capture_output=True, text=True)
     lines = result.stdout.splitlines()
     assert "Socket" in lines
     assert "--nnodes=3" in lines and "--nproc_per_node=4" in lines
     assert f"--node_rank={node_rank % 3}" in lines
-    assert f"--master_addr={'node-a' if node_rank < 3 else 'node-b'}" in lines
-    assert lines[lines.index("--arm") + 1] == ("A" if node_rank < 3 else "B")
-    assert lines[lines.index("--resume-arm-root") + 1] == str(tmp_path / "previous" / ("arm-A" if node_rank < 3 else "arm-B"))
+    assert "--master_addr=node-b" in lines
+    assert lines[lines.index("--arm") + 1] == "B"
+    assert lines[lines.index("--resume-arm-root") + 1] == str(tmp_path / "previous/arm-B")
 
 
 def test_allocation_notification_retries_transient_disconnect(tmp_path, monkeypatch, capsys):
@@ -578,7 +778,8 @@ def test_export_relay_stops_when_allocation_ends_without_checkpoints(tmp_path, m
 
 
 @pytest.mark.parametrize("world", [12, 32])
-def test_private_backup_uses_hardlinks_and_requires_matching_receipt_before_cleanup(tmp_path, world):
+@pytest.mark.parametrize("pbs_finished", [False, True])
+def test_public_recovery_uses_hardlinks_and_requires_matching_receipt_before_cleanup(tmp_path, world, pbs_finished):
     import json
     import publish192
     from ranker.data import write_json
@@ -602,6 +803,13 @@ def test_private_backup_uses_hardlinks_and_requires_matching_receipt_before_clea
             write_json(owner / f"{label}.json", {"directory": "checkpoints/step_00000578", "step": 578})
         write_json(owner / "TRAINING_DONE.json", {"checkpoint_complete": True})
         keep.append(directory)
+    if pbs_finished:
+        for arm in ("A", "B"):
+            (root / f"arm-{arm}/TRAINING_DONE.json").unlink()
+        write_json(root / "control/status.json", {"state": "R"})
+        assert not publish192.collect(tmp_path, "private")["files"]
+        write_json(root / "control/status.json", {"state": "F"})
+        assert publish192.status(tmp_path)["finished"]
     obsolete = root / "arm-A/checkpoints/step_00000500.staging"
     obsolete.mkdir()
     (obsolete / "incomplete.pt").write_text("incomplete")
@@ -610,12 +818,14 @@ def test_private_backup_uses_hardlinks_and_requires_matching_receipt_before_clea
     assert frozen["checkpoints"] == original["checkpoints"]
     for name, entry in frozen["files"].items():
         assert (tmp_path / entry["path"]).samefile(tmp_path / original["files"][name]["path"])
-    receipt = {"job": publish192.JOB, "mode": "private", "private": True, "verified": True,
+    receipt = {"job": publish192.JOB, "mode": "private", "private": False, "verified": True,
                "repository": publish192.PRIVATE_HF, "commit": "a" * 40,
                "files": {name: {"bytes": entry["bytes"], "digest": git_blob_file(tmp_path / entry["path"])}
                          for name, entry in frozen["files"].items()}}
     with pytest.raises(ValueError, match="identity or privacy"):
-        publish192.acknowledge_backup(tmp_path, frozen, {**receipt, "private": False}, "private")
+        publish192.acknowledge_backup(tmp_path, frozen, {**receipt, "private": True}, "private")
+    with pytest.raises(ValueError, match="public recovery"):
+        publish192.cleanup_after_backup(tmp_path, root, {**receipt, "mode": "metrics"})
     assert obsolete.exists()
     name = next(iter(receipt["files"]))
     invalid = {**receipt, "files": {**receipt["files"], name: {"bytes": -1, "digest": "0" * 64}}}
@@ -637,6 +847,31 @@ def test_metric_snapshot_copies_mutable_logs(tmp_path):
     destination = tmp_path / frozen["files"]["history.jsonl"]["path"]
     source.write_text("changed")
     assert destination.read_text() == "original" and not destination.samefile(source)
+
+
+def test_recovery_client_creates_and_verifies_public_repository(tmp_path, monkeypatch):
+    import publish192
+    from unittest.mock import Mock
+    payload = tmp_path / "recovery.pt"
+    payload.write_bytes(b"recovery")
+    current, snapshot = Mock(), Mock()
+    current.json.return_value = {"job": publish192.JOB, "experiment": "1.9.2", "finished": False}
+    snapshot.json.return_value = {"job": publish192.JOB, "experiment": "1.9.2", "private_recovery": True,
+                                  "frozen_at": "now", "files": {"recovery.pt": {}}}
+    monkeypatch.setattr(publish192.requests, "get", Mock(side_effect=[current, snapshot]))
+    monkeypatch.setattr(publish192.requests, "post", Mock(return_value=Mock()))
+    monkeypatch.setattr(publish192, "download_snapshot", Mock(return_value={"recovery.pt": payload}))
+    monkeypatch.setattr(publish192.shared.legacy, "credential", lambda name: "test-token")
+    api = Mock()
+    api.whoami.return_value = {"name": "YL95"}
+    api.model_info.return_value.private = False
+    api.create_commit.return_value.oid = "a" * 40
+    monkeypatch.setattr(publish192, "HfApi", Mock(return_value=api))
+    verified = Mock(return_value={"recovery.pt": {"bytes": 8, "digest": publish192.digest(payload)}})
+    monkeypatch.setattr(publish192.shared, "verify_cloud_files", verified)
+    assert publish192.publish_once(tmp_path, "http://local", "private") is False
+    api.create_repo.assert_called_once_with(publish192.PRIVATE_HF, repo_type="model", private=False, exist_ok=True)
+    assert verified.call_args.kwargs["private"] is False
 
 
 def test_relay_deduplicates_payloads_and_cleans_only_verified_cache(tmp_path, monkeypatch):
